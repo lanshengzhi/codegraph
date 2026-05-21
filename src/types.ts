@@ -269,6 +269,10 @@ export interface TraceEdge {
   line?: number;
   column?: number;
   provenance?: Edge['provenance'];
+  /** Static resolver confidence for this edge, when recorded. Not runtime probability. */
+  confidence?: number;
+  /** Static resolution strategy that produced this edge, when recorded. */
+  resolvedBy?: string;
 }
 
 /**

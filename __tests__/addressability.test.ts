@@ -225,15 +225,34 @@ describe.skipIf(!HAS_SQLITE)('MCP addressability', () => {
     expect(callers.isError).toBeFalsy();
     expect(callers.content[0].text).toContain('run (method)');
     expect(callers.content[0].text).toContain(`nodeId=${method.id}`);
+    expect(callers.content[0].text).toContain('edgeKind=calls');
+    expect(callers.content[0].text).toContain('callsite=src/service.ts:');
+    expect(callers.content[0].text).toContain('provenance=unknown');
+    expect(callers.content[0].text).toContain('confidence=');
+    expect(callers.content[0].text).toContain('resolvedBy=');
 
     const callees = await handler.execute('codegraph_callees', { path: 'src/service.ts', line: 3 });
     expect(callees.isError).toBeFalsy();
     expect(callees.content[0].text).toContain('helper (function)');
+    expect(callees.content[0].text).toContain('edgeKind=calls');
+    expect(callees.content[0].text).toContain('callsite=src/service.ts:');
 
     const impact = await handler.execute('codegraph_impact', { qualifiedName: helper.qualifiedName });
     expect(impact.isError).toBeFalsy();
     expect(impact.content[0].text).toContain('helper');
     expect(impact.content[0].text).toContain('range=src/service.ts:');
+  });
+
+  it('explains that codegraph_files no-match results are indexed-only', async () => {
+    const result = await handler.execute('codegraph_files', { path: 'src/missing.ts' });
+    expect(result.isError).toBeFalsy();
+    const text = result.content[0].text;
+    expect(text).toContain('No indexed files matched the criteria.');
+    expect(text).toContain('indexed files only');
+    expect(text).toContain('new, ignored, unsupported, non-code, or not synced');
+    expect(text).toContain('git status');
+    expect(text).toContain('read src/missing.ts');
+    expect(text).toContain('codegraph sync --quiet');
   });
 
   it('returns an MCP error when no locator fields are provided', async () => {

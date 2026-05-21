@@ -199,6 +199,13 @@ export class GraphTracer {
   }
 
   private toTraceEdge(edge: Edge): TraceEdge {
+    const confidence = edge.metadata && typeof edge.metadata.confidence === 'number'
+      ? edge.metadata.confidence
+      : undefined;
+    const resolvedBy = edge.metadata && typeof edge.metadata.resolvedBy === 'string'
+      ? edge.metadata.resolvedBy
+      : undefined;
+
     return {
       sourceNodeId: edge.source,
       targetNodeId: edge.target,
@@ -206,6 +213,8 @@ export class GraphTracer {
       line: edge.line,
       column: edge.column,
       provenance: edge.provenance,
+      confidence,
+      resolvedBy,
     };
   }
 

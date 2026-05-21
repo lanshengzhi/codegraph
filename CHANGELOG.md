@@ -12,9 +12,11 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 - **MCP / addressability**: Search, node, caller/callee, and impact results now expose copyable exact handles (`nodeId`, `qualifiedName`, and `range=file:line-line`). `codegraph_node`, `codegraph_callers`, `codegraph_callees`, and `codegraph_impact` can use those handles directly via `nodeId`, `qualifiedName`, `path`+`line`, or `fileLine`, so same-name symbols no longer require fuzzy re-resolution.
 - **MCP / trace**: New `codegraph_trace` tool returns candidate static graph paths from an entry locator to a target symbol/query/locator, including path steps, edge kinds, callsite lines when available, caveats, and recommended exact follow-ups.
+- **MCP / edge evidence**: `codegraph_trace`, `codegraph_callers`, and `codegraph_callees` now surface static edge evidence in their text output — edge kind, callsite, provenance, resolution confidence, resolver, and explicit `not-recorded` fallbacks — so agents can see when a path is only a static candidate instead of runtime proof.
 
 ### Changed
-- **MCP / ambiguity**: Symbol-only ambiguous results now list alternatives with copyable exact handles instead of only `path:start` locations.
+- **MCP / ambiguity**: Symbol-only ambiguous results now list alternatives with copyable exact handles instead of only `path:start` locations, grouped by file for easier disambiguation.
+- **MCP / files**: `codegraph_files` no-match responses now state that results are indexed-only and suggest checking git status, reading the path directly, or syncing the index instead of implying the file does not exist.
 - **Agent guidance**: Installed instructions and MCP server instructions now teach agents to reuse `nodeId`/`file:line` handles and use `codegraph_trace` for lifecycle or entry-to-target flow questions.
 
 ## [0.9.4] - 2026-05-22

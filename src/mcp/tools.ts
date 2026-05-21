@@ -8,6 +8,7 @@ import CodeGraph, { findNearestCodeGraphRoot } from '../index';
 import type {
   Node,
   Edge,
+  NodeHandle,
   SearchResult,
   Subgraph,
   TaskContext,
@@ -17,6 +18,7 @@ import type {
   EdgeKind,
   TraceOptions,
   TraceResult,
+  TraceEdge,
 } from '../types';
 import { formatNodeHandle, matchesSymbol as nodeMatchesSymbol } from '../addressability/format';
 import { createHash } from 'crypto';
@@ -70,6 +72,13 @@ const RUST_PATH_PREFIXES = new Set(['crate', 'super', 'self']);
 const CONTAINER_NODE_KINDS = new Set<NodeKind>([
   'class', 'struct', 'interface', 'trait', 'protocol', 'enum', 'namespace', 'module',
 ]);
+
+interface NodeEdgeListItem {
+  node: Node;
+  edge: Edge;
+  root: Node;
+  sourceNode?: Node | null;
+}
 
 /** Last `::` / `.` / `/`-separated segment of a qualified symbol. */
 function lastQualifierPart(symbol: string): string {
@@ -946,12 +955,18 @@ export class ToolHandler {
     }
 
     const seen = new Set<string>();
-    const allCallers: Node[] = [];
-    for (const node of roots.nodes) {
-      for (const c of cg.getCallers(node.id)) {
-        if (!seen.has(c.node.id)) {
-          seen.add(c.node.id);
-          allCallers.push(c.node);
+    const allCallers: NodeEdgeListItem[] = [];
+    for (const root of roots.nodes) {
+      for (const c of cg.getCallers(root.id)) {
+        const key = this.edgeListDedupKey(c.node, c.edge, root);
+        if (!seen.has(key)) {
+          seen.add(key);
+          allCallers.push({
+            node: c.node,
+            edge: c.edge,
+            root,
+            sourceNode: c.node.id === c.edge.source ? c.node : cg.getNode(c.edge.source),
+          });
         }
       }
     }
@@ -961,7 +976,7 @@ export class ToolHandler {
       return this.textResult(`No callers found for "${label}"${roots.note}`);
     }
 
-    const formatted = this.formatNodeList(allCallers.slice(0, limit), `Callers of ${label}`) + roots.note;
+    const formatted = this.formatNodeEdgeList(allCallers.slice(0, limit), `Callers of ${label}`) + roots.note;
     return this.textResult(this.truncateOutput(formatted));
   }
 
@@ -981,12 +996,18 @@ export class ToolHandler {
     }
 
     const seen = new Set<string>();
-    const allCallees: Node[] = [];
-    for (const node of roots.nodes) {
-      for (const c of cg.getCallees(node.id)) {
-        if (!seen.has(c.node.id)) {
-          seen.add(c.node.id);
-          allCallees.push(c.node);
+    const allCallees: NodeEdgeListItem[] = [];
+    for (const root of roots.nodes) {
+      for (const c of cg.getCallees(root.id)) {
+        const key = this.edgeListDedupKey(c.node, c.edge, root);
+        if (!seen.has(key)) {
+          seen.add(key);
+          allCallees.push({
+            node: c.node,
+            edge: c.edge,
+            root,
+            sourceNode: root.id === c.edge.source ? root : cg.getNode(c.edge.source),
+          });
         }
       }
     }
@@ -996,7 +1017,7 @@ export class ToolHandler {
       return this.textResult(`No callees found for "${label}"${roots.note}`);
     }
 
-    const formatted = this.formatNodeList(allCallees.slice(0, limit), `Callees of ${label}`) + roots.note;
+    const formatted = this.formatNodeEdgeList(allCallees.slice(0, limit), `Callees of ${label}`) + roots.note;
     return this.textResult(this.truncateOutput(formatted));
   }
 
@@ -1641,7 +1662,7 @@ export class ToolHandler {
     }
 
     if (files.length === 0) {
-      return this.textResult(`No files found matching the criteria.`);
+      return this.textResult(this.formatFilesNoMatch(pathFilter, pattern));
     }
 
     // Format output
@@ -1660,6 +1681,31 @@ export class ToolHandler {
     }
 
     return this.textResult(this.truncateOutput(output));
+  }
+
+  private formatFilesNoMatch(pathFilter?: string, pattern?: string): string {
+    const lines: string[] = [
+      'No indexed files matched the criteria.',
+      '',
+    ];
+
+    const criteria: string[] = [];
+    if (pathFilter) criteria.push(`path=${pathFilter}`);
+    if (pattern) criteria.push(`pattern=${pattern}`);
+    if (criteria.length > 0) {
+      lines.push(`Criteria: ${criteria.join(' ')}`, '');
+    }
+
+    lines.push(
+      'Note: codegraph_files lists indexed files only, not the complete filesystem. A file may be new, ignored, unsupported, non-code, or not synced yet.',
+      'Use index-relative paths like `src/foo.ts`, not `./src/foo.ts` or absolute paths.',
+      'Suggested checks:',
+      '- git status'
+    );
+    if (pathFilter) lines.push(`- read ${pathFilter}`);
+    lines.push('- codegraph sync --quiet');
+
+    return lines.join('\n');
   }
 
   /**
@@ -2080,18 +2126,37 @@ export class ToolHandler {
 
   private formatAmbiguity(nodes: Node[], query: string, intro?: string): string {
     const cap = 10;
-    const shown = nodes.slice(0, cap);
     const lines = [
       '',
       `> **Note:** ${nodes.length} symbols named "${query}" (ambiguous locator) matched ${nodes.length} nodes. ${intro ?? 'Use an exact handle for follow-up:'}`,
+      ...this.formatGroupedNodeHandles(nodes, cap, '> '),
     ];
+    return '\n' + lines.join('\n');
+  }
+
+  private formatGroupedNodeHandles(nodes: Node[], cap: number = 10, prefix: string = ''): string[] {
+    const shown = [...nodes]
+      .sort((a, b) => a.filePath.localeCompare(b.filePath) || a.startLine - b.startLine || a.name.localeCompare(b.name))
+      .slice(0, cap);
+    const byFile = new Map<string, Node[]>();
+
     for (const node of shown) {
-      lines.push(`> - ${node.name} (${node.kind}) ${formatNodeHandle(node)}`);
+      const existing = byFile.get(node.filePath) ?? [];
+      existing.push(node);
+      byFile.set(node.filePath, existing);
+    }
+
+    const lines: string[] = [];
+    for (const [file, fileNodes] of byFile) {
+      lines.push(`${prefix}${file}:`);
+      for (const node of fileNodes) {
+        lines.push(`${prefix}- ${node.name} (${node.kind}) ${formatNodeHandle(node)}`);
+      }
     }
     if (nodes.length > cap) {
-      lines.push(`> - ... and ${nodes.length - cap} more`);
+      lines.push(`${prefix}- ... and ${nodes.length - cap} more`);
     }
-    return '\n' + lines.join('\n');
+    return lines;
   }
 
   private formatResolutionFailure(resolution: LocatorResolution): string {
@@ -2103,20 +2168,23 @@ export class ToolHandler {
     ];
 
     if (resolution.alternatives && resolution.alternatives.length > 0) {
-      lines.push('', resolution.status === 'ambiguous' ? 'Alternatives:' : 'Nearby alternatives:');
-      for (const node of resolution.alternatives.slice(0, 10)) {
-        lines.push(`- ${node.name} (${node.kind}) ${formatNodeHandle(node)}`);
-      }
-      if (resolution.alternatives.length > 10) {
-        lines.push(`- ... and ${resolution.alternatives.length - 10} more`);
-      }
+      lines.push(
+        '',
+        resolution.status === 'ambiguous' ? 'Alternatives:' : 'Nearby alternatives:',
+        ...this.formatGroupedNodeHandles(resolution.alternatives, 10)
+      );
     }
 
     return lines.join('\n');
   }
 
   private formatTraceResult(result: TraceResult): string {
-    const lines: string[] = ['## Trace', ''];
+    const lines: string[] = [
+      '## Trace',
+      '',
+      '> Static graph candidate only. This is not runtime proof; dynamic dispatch, callbacks, registries, and dependency injection may hide or reorder runtime paths. Resolution confidence is static, not runtime probability.',
+      '',
+    ];
 
     if (result.from) {
       lines.push(`From: ${result.from.name} (${result.from.kind}) nodeId=${result.from.nodeId} range=${result.from.path}:${result.from.startLine}-${result.from.endLine}`);
@@ -2125,9 +2193,10 @@ export class ToolHandler {
     if (result.status !== 'resolved') {
       lines.push(`Status: ${result.status}`);
       lines.push('', this.formatResolutionFailure(result.fromResolution));
-      if (result.recommendations.length > 0) {
+      const recs = this.buildTraceNextChecks(result);
+      if (recs.length > 0) {
         lines.push('', '### Recommended next');
-        for (const rec of result.recommendations) lines.push(rec);
+        for (const rec of recs) lines.push(`- ${rec.replace(/^[-•]\s*/, '')}`);
       }
       lines.push('', `> ${result.completenessNote}`);
       return lines.join('\n');
@@ -2159,8 +2228,8 @@ export class ToolHandler {
         if (stepIndex > 0) {
           const edge = path.edges[stepIndex - 1];
           if (edge) {
-            const callsite = edge.line ? ` at line ${edge.line}` : '';
-            lines.push(`   └─ ${edge.kind}${callsite}`);
+            const sourceStep = path.steps.find((s) => s.node.nodeId === edge.sourceNodeId);
+            lines.push(`   └─ ${this.formatEdgeEvidence(edge, sourceStep?.node ?? null)}`);
           }
         }
         lines.push(`${stepIndex + 1}. ${step.node.name} (${step.node.kind}) nodeId=${step.node.nodeId} qualifiedName=${step.node.qualifiedName} range=${step.node.path}:${step.node.startLine}-${step.node.endLine}`);
@@ -2175,13 +2244,157 @@ export class ToolHandler {
     }
 
     lines.push('### Recommended next');
-    const recs = result.recommendations.length > 0
-      ? result.recommendations
-      : ['Inspect path steps with codegraph_node using the returned nodeId handles.'];
-    for (const rec of recs) lines.push(`- ${rec.replace(/^[-•]\s*/, '')}`);
+    for (const rec of this.buildTraceNextChecks(result)) {
+      lines.push(`- ${rec.replace(/^[-•]\s*/, '')}`);
+    }
 
     lines.push('', `> ${result.completenessNote}`);
     return lines.join('\n');
+  }
+
+  private buildTraceNextChecks(result: TraceResult): string[] {
+    const recs: string[] = [];
+    const firstPath = result.paths[0];
+
+    if (firstPath) {
+      for (const node of this.selectTraceNodes(firstPath.steps.map((s) => s.node), 5)) {
+        this.addUniqueRecommendation(recs, `codegraph_node({ nodeId: "${node.nodeId}" })`);
+      }
+      for (const readCheck of this.formatTraceReadChecks(firstPath.steps.map((s) => s.node))) {
+        this.addUniqueRecommendation(recs, readCheck);
+      }
+      const query = this.traceExploreQuery(firstPath.steps.map((s) => s.node.name));
+      if (query) this.addUniqueRecommendation(recs, `codegraph_explore query "${query}"`);
+    } else {
+      if (result.from) {
+        this.addUniqueRecommendation(recs, `codegraph_node({ nodeId: "${result.from.nodeId}" })`);
+        this.addUniqueRecommendation(recs, `codegraph_callees({ nodeId: "${result.from.nodeId}" })`);
+        this.addUniqueRecommendation(recs, `codegraph_callers({ nodeId: "${result.from.nodeId}" })`);
+      }
+
+      for (const target of result.targetCandidates.slice(0, 3)) {
+        this.addUniqueRecommendation(recs, `codegraph_node({ nodeId: "${target.nodeId}" })`);
+      }
+
+      const alternatives = [
+        ...(result.fromResolution.alternatives ?? []),
+        ...(result.targetResolution?.alternatives ?? []),
+      ];
+      for (const node of alternatives.slice(0, 5)) {
+        this.addUniqueRecommendation(recs, `codegraph_node({ nodeId: "${node.id}" })`);
+      }
+
+      const query = this.traceExploreQuery([
+        result.from?.name,
+        ...result.targetCandidates.map((target) => target.name),
+        ...alternatives.slice(0, 5).map((node) => node.name),
+      ]);
+      if (query) this.addUniqueRecommendation(recs, `codegraph_explore query "${query}"`);
+    }
+
+    for (const rec of result.recommendations) {
+      const normalized = this.normalizeTraceRecommendation(rec);
+      if (normalized) this.addUniqueRecommendation(recs, normalized);
+    }
+
+    return recs;
+  }
+
+  private selectTraceNodes(nodes: NodeHandle[], cap: number): NodeHandle[] {
+    if (nodes.length <= cap) return nodes;
+    const indexes = [0, 1, Math.floor((nodes.length - 1) / 2), nodes.length - 2, nodes.length - 1];
+    return Array.from(new Set(indexes))
+      .sort((a, b) => a - b)
+      .slice(0, cap)
+      .map((index) => nodes[index]!)
+      .filter(Boolean);
+  }
+
+  private formatTraceReadChecks(nodes: NodeHandle[]): string[] {
+    const byPath = new Map<string, { start: number; end: number }>();
+    for (const node of nodes) {
+      const existing = byPath.get(node.path);
+      if (!existing) {
+        byPath.set(node.path, { start: node.startLine, end: node.endLine });
+      } else {
+        existing.start = Math.min(existing.start, node.startLine);
+        existing.end = Math.max(existing.end, node.endLine);
+      }
+    }
+
+    return Array.from(byPath.entries())
+      .slice(0, 3)
+      .map(([filePath, range]) => `read ${filePath}:${range.start}-${range.end}`);
+  }
+
+  private traceExploreQuery(names: Array<string | undefined>): string {
+    return Array.from(new Set(names.filter((name): name is string => Boolean(name))))
+      .slice(0, 8)
+      .join(' ')
+      .replace(/"/g, '\\"');
+  }
+
+  private normalizeTraceRecommendation(rec: string): string | null {
+    const cleaned = rec
+      .replace(/^[-•]\s*/, '')
+      .replace(/^Recommended next:\s*/i, '')
+      .trim();
+    if (!cleaned) return null;
+    if (/^Resolve ambiguity with an exact handle:?$/i.test(cleaned)) return null;
+    if (/^Nearby alternatives:?$/i.test(cleaned)) return null;
+    if (/^Use codegraph_node with a returned nodeId/i.test(cleaned)) return null;
+    if (/^nodeId=/.test(cleaned)) return null;
+    if (/^Inspect the entry: nodeId=/.test(cleaned)) return null;
+    return cleaned;
+  }
+
+  private addUniqueRecommendation(recs: string[], rec: string): void {
+    if (!recs.includes(rec)) recs.push(rec);
+  }
+
+  private formatEdgeEvidence(edge: Edge | TraceEdge, sourceNode?: Node | NodeHandle | null): string {
+    const confidence = this.edgeConfidence(edge);
+    const resolvedBy = this.edgeResolvedBy(edge);
+    return [
+      `edgeKind=${edge.kind}`,
+      `callsite=${this.formatCallsite(edge.line, edge.column, sourceNode)}`,
+      `provenance=${edge.provenance ?? 'unknown'}`,
+      `confidence=${confidence === undefined ? 'not-recorded' : confidence.toFixed(2)}`,
+      `resolvedBy=${resolvedBy ?? 'not-recorded'}`,
+      'evidence=not-recorded',
+    ].join(' ');
+  }
+
+  private edgeConfidence(edge: Edge | TraceEdge): number | undefined {
+    if ('confidence' in edge && typeof edge.confidence === 'number' && Number.isFinite(edge.confidence)) {
+      return edge.confidence;
+    }
+    if ('metadata' in edge && edge.metadata && typeof edge.metadata.confidence === 'number' && Number.isFinite(edge.metadata.confidence)) {
+      return edge.metadata.confidence;
+    }
+    return undefined;
+  }
+
+  private edgeResolvedBy(edge: Edge | TraceEdge): string | undefined {
+    if ('resolvedBy' in edge && typeof edge.resolvedBy === 'string' && edge.resolvedBy.length > 0) {
+      return edge.resolvedBy;
+    }
+    if ('metadata' in edge && edge.metadata && typeof edge.metadata.resolvedBy === 'string' && edge.metadata.resolvedBy.length > 0) {
+      return edge.metadata.resolvedBy;
+    }
+    return undefined;
+  }
+
+  private formatCallsite(line?: number, column?: number, sourceNode?: Node | NodeHandle | null): string {
+    const sourcePath = sourceNode
+      ? ('filePath' in sourceNode ? sourceNode.filePath : sourceNode.path)
+      : undefined;
+    if (!sourcePath || line === undefined) return 'unknown';
+    return `${sourcePath}:${line}${column !== undefined ? `:${column}` : ''}`;
+  }
+
+  private edgeListDedupKey(node: Node, edge: Edge, root: Node): string {
+    return [node.id, root.id, edge.source, edge.target, edge.kind, edge.line ?? '', edge.column ?? ''].join('|');
   }
 
   /**
@@ -2213,11 +2426,15 @@ export class ToolHandler {
     return lines.join('\n');
   }
 
-  private formatNodeList(nodes: Node[], title: string): string {
-    const lines: string[] = [`## ${title} (${nodes.length} found)`, ''];
+  private formatNodeEdgeList(items: NodeEdgeListItem[], title: string): string {
+    const lines: string[] = [`## ${title} (${items.length} found)`, ''];
 
-    for (const node of nodes) {
-      lines.push(`- ${node.name} (${node.kind}) - ${formatNodeHandle(node)}`);
+    for (const item of items) {
+      lines.push(`- ${item.node.name} (${item.node.kind}) - ${formatNodeHandle(item.node)}`);
+      lines.push(`  └─ ${this.formatEdgeEvidence(item.edge, item.sourceNode)} sourceNodeId=${item.edge.source} targetNodeId=${item.edge.target}`);
+      if (item.root.id !== item.edge.source && item.root.id !== item.edge.target) {
+        lines.push(`     root=${item.root.name} (${item.root.kind}) nodeId=${item.root.id}`);
+      }
     }
 
     return lines.join('\n');

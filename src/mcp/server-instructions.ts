@@ -41,11 +41,11 @@ of calls; a grep/read exploration is dozens.
 
 - **"What is the symbol named X?"** → \`codegraph_search\`
 - **"What's the deal with this task / feature / area?"** → \`codegraph_context\` (PRIMARY — composes search + node + callers + callees in one call)
-- **"What calls this?"** → \`codegraph_callers\`
-- **"What does this call?"** → \`codegraph_callees\`
+- **"What calls this?"** → \`codegraph_callers\` (includes edge evidence/callsite when recorded)
+- **"What does this call?"** → \`codegraph_callees\` (includes edge evidence/callsite when recorded)
 - **"What would changing this break?"** → \`codegraph_impact\`
 - **"Show me this symbol's source / signature / docstring."** → \`codegraph_node\`
-- **"Trace this lifecycle / path from entry to target."** → \`codegraph_trace\` (path-shaped static graph guidance with handles)
+- **"Trace this lifecycle / path from entry to target."** → \`codegraph_trace\` (path-shaped static graph guidance with handles and edge evidence; not runtime proof)
 - **"Show me several related symbols' source / survey an area."** → \`codegraph_explore\` (ONE capped call; prefer over many codegraph_node/Read)
 - **"What's in directory X?"** → \`codegraph_files\`
 - **"Is the index ready / what's its size?"** → \`codegraph_status\`
@@ -69,5 +69,6 @@ of calls; a grep/read exploration is dozens.
 
 - Index lags file writes by ~1 second.
 - Cross-file resolution is best-effort name matching; ambiguous calls may return multiple candidates.
+- Trace/callers/callees edge evidence reflects indexed static edges; \`not-recorded\` means the index did not capture that fact, not that runtime behavior is absent.
 - No live correctness validation — that's still the TypeScript compiler / test suite / linter's job. Codegraph supplements those with structural context they don't have.
 `;
