@@ -19,6 +19,7 @@ import type {
   TraceOptions,
   TraceResult,
   TraceEdge,
+  TraceBoundary,
 } from '../types';
 import { formatNodeHandle, matchesSymbol as nodeMatchesSymbol } from '../addressability/format';
 import { createHash } from 'crypto';
@@ -2237,6 +2238,11 @@ export class ToolHandler {
       lines.push('');
     }
 
+    const boundaryLines = this.formatTraceBoundaries(result.boundaries);
+    if (boundaryLines.length > 0) {
+      lines.push(...boundaryLines, '');
+    }
+
     if (result.gaps.length > 0) {
       lines.push('### Gaps / caveats');
       for (const gap of result.gaps) lines.push(`- ${gap}`);
@@ -2252,9 +2258,43 @@ export class ToolHandler {
     return lines.join('\n');
   }
 
+  private formatTraceBoundaries(boundaries: TraceBoundary[]): string[] {
+    if (boundaries.length === 0) return [];
+
+    const lines: string[] = ['### Boundaries / low-evidence edges'];
+    for (const boundary of boundaries.slice(0, 5)) {
+      const parts = [
+        `type=${boundary.type}`,
+        `node=${boundary.node.name}`,
+        `nodeId=${boundary.node.nodeId}`,
+        `range=${boundary.node.path}:${boundary.node.startLine}-${boundary.node.endLine}`,
+      ];
+      if (boundary.enclosingNode) {
+        parts.push(`enclosing=${boundary.enclosingNode.name}`);
+      }
+      parts.push(`callsite=${boundary.edge ? this.formatCallsite(boundary.edge.line, boundary.edge.column, boundary.enclosingNode ?? null) : 'unknown'}`);
+      if (boundary.edge) {
+        parts.push(`edgeKind=${boundary.edge.kind}`);
+      }
+      lines.push(`- ${parts.join(' ')}`);
+      lines.push(`  reason=${boundary.reason}`);
+    }
+    return lines;
+  }
+
   private buildTraceNextChecks(result: TraceResult): string[] {
     const recs: string[] = [];
     const firstPath = result.paths[0];
+
+    for (const boundary of result.boundaries.slice(0, 3)) {
+      this.addUniqueRecommendation(recs, `codegraph_node({ nodeId: "${boundary.node.nodeId}" })`);
+      this.addUniqueRecommendation(recs, `codegraph_callees({ nodeId: "${boundary.node.nodeId}" })`);
+      this.addUniqueRecommendation(recs, `read ${boundary.node.path}:${boundary.node.startLine}-${boundary.node.endLine}`);
+      if (boundary.enclosingNode) {
+        this.addUniqueRecommendation(recs, `codegraph_node({ nodeId: "${boundary.enclosingNode.nodeId}" })`);
+        this.addUniqueRecommendation(recs, `read ${boundary.enclosingNode.path}:${boundary.enclosingNode.startLine}-${boundary.enclosingNode.endLine}`);
+      }
+    }
 
     if (firstPath) {
       for (const node of this.selectTraceNodes(firstPath.steps.map((s) => s.node), 5)) {

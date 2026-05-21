@@ -132,7 +132,7 @@ The gains scale with codebase size: on large repos the agent answers from the in
 | **Smart Context Building** | One tool call returns entry points, related symbols, and code snippets — no expensive exploration agents |
 | **Full-Text Search** | Find code by name instantly across your entire codebase, powered by FTS5 |
 | **Exact Handles** | Search/node results include reusable `nodeId`, `qualifiedName`, and `file:line` ranges for precise follow-up calls |
-| **Static Trace** | `codegraph_trace` returns candidate entry→target graph paths with edge kinds, callsite lines, gaps, and next-step handles |
+| **Static Trace** | `codegraph_trace` returns candidate entry→target graph paths with edge kinds, callsite lines, boundary / low-evidence caveats, gaps, and next-step handles |
 | **Impact Analysis** | Trace callers, callees, and the full impact radius of any symbol before making changes |
 | **Always Fresh** | File watcher uses native OS events (FSEvents/inotify/ReadDirectoryChangesW) with debounced auto-sync — the graph stays current as you code, zero config |
 | **19+ Languages** | TypeScript, JavaScript, Python, Go, Rust, Java, C#, PHP, Ruby, C, C++, Swift, Kotlin, Dart, Lua, Luau, Svelte, Liquid, Pascal/Delphi |
@@ -274,7 +274,7 @@ Use CodeGraph directly for structural exploration: `codegraph_context` for orien
 |------|---------|
 | `codegraph_search` | Find symbols by name and get exact handles |
 | `codegraph_context` | Get focused task/area context |
-| `codegraph_trace` | Trace likely static graph paths with edge/callsite metadata |
+| `codegraph_trace` | Trace likely static graph paths with edge/callsite metadata and boundary / low-evidence caveats |
 | `codegraph_callers` / `codegraph_callees` | Trace local call flow |
 | `codegraph_impact` | Check what's affected before editing |
 | `codegraph_node` | Get a single symbol/locator's details |
@@ -397,14 +397,13 @@ When running as an MCP server, CodeGraph exposes these tools to Claude Code:
 | `codegraph_callers` | Find what calls a function |
 | `codegraph_callees` | Find what a function calls |
 | `codegraph_impact` | Analyze what code is affected by changing a symbol |
-<<<<<<< HEAD
 | `codegraph_node` | Get details about a specific symbol/locator (optionally with source code) |
 | `codegraph_explore` | Return source for several related symbols grouped by file, plus a relationship map, in one call |
-| `codegraph_trace` | Trace likely static graph paths from an entry locator to a target symbol/query/locator |
+| `codegraph_trace` | Trace likely static graph paths from an entry locator to a target symbol/query/locator, including boundary / low-evidence caveats when recorded |
 | `codegraph_files` | Get indexed file structure (faster than filesystem scanning) |
 | `codegraph_status` | Check index health and statistics |
 
-Search and node results include copyable handles such as `nodeId=...`, `qualifiedName=...`, and `range=src/file.ts:10-20`. Pass those back to `codegraph_node`, `codegraph_callers`, `codegraph_callees`, `codegraph_impact`, or `codegraph_trace` as `nodeId`, `qualifiedName`, `path`+`line`, or `fileLine`.
+Search and node results include copyable handles such as `nodeId=...`, `qualifiedName=...`, and `range=src/file.ts:10-20`. Pass those back to `codegraph_node`, `codegraph_callers`, `codegraph_callees`, `codegraph_impact`, or `codegraph_trace` as `nodeId`, `qualifiedName`, `path`+`line`, or `fileLine`. Trace output may highlight max-depth frontiers, indexed dead ends, metadata-not-recorded edges, or low-evidence/static framework boundaries with exact follow-up handles; these are static graph caveats, not runtime proof.
 
 Example trace input:
 

@@ -713,6 +713,7 @@ export class CodeGraph {
         fromResolution,
         targetCandidates: [],
         paths: [],
+        boundaries: [],
         gaps: [fromResolution.message ?? `Unable to resolve trace entry (${fromResolution.status}).`],
         recommendations: this.recommendResolutionFollowup(fromResolution),
         completenessNote,
@@ -728,6 +729,7 @@ export class CodeGraph {
         targetResolution: target.resolution,
         targetCandidates: [],
         paths: [],
+        boundaries: [],
         gaps: target.gaps.length > 0 ? target.gaps : ['No target candidates found.'],
         recommendations: [
           ...target.recommendations,
@@ -750,6 +752,7 @@ export class CodeGraph {
       targetResolution: target.resolution,
       targetCandidates: traced.targetCandidates.map(toNodeHandle),
       paths: traced.paths,
+      boundaries: traced.boundaries,
       gaps: [...target.gaps, ...traced.gaps],
       recommendations: [
         ...target.recommendations,

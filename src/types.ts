@@ -293,6 +293,29 @@ export interface TracePath {
   reason: string;
 }
 
+export type TraceBoundaryType =
+  | 'max-depth'
+  | 'dead-end'
+  | 'low-evidence-edge'
+  | 'framework-edge'
+  | 'metadata-not-recorded';
+
+/**
+ * Conservative trace boundary/caveat derived only from recorded graph facts.
+ */
+export interface TraceBoundary {
+  /** Conservative boundary classification derived from recorded graph facts only. */
+  type: TraceBoundaryType;
+  /** Node where the trace stopped or where the low-evidence edge lands. */
+  node: NodeHandle;
+  /** Source/enclosing node for the boundary edge, when known. */
+  enclosingNode?: NodeHandle;
+  /** Edge involved in the boundary, when known. */
+  edge?: TraceEdge;
+  /** Human-readable explanation. Must not claim runtime certainty. */
+  reason: string;
+}
+
 export type TraceStatus = 'resolved' | 'ambiguous' | 'not_found';
 
 /**
@@ -305,6 +328,7 @@ export interface TraceResult {
   targetResolution?: LocatorResolution;
   targetCandidates: NodeHandle[];
   paths: TracePath[];
+  boundaries: TraceBoundary[];
   gaps: string[];
   recommendations: string[];
   completenessNote: string;

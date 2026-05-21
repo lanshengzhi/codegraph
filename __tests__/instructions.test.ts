@@ -6,17 +6,19 @@ import { SERVER_INSTRUCTIONS } from '../src/mcp/server-instructions';
 import { INSTRUCTIONS_TEMPLATE } from '../src/installer/instructions-template';
 
 describe('CodeGraph instructions', () => {
-  it('mentions trace, precise locators, and edge evidence in server instructions', () => {
+  it('mentions trace, precise locators, edge evidence, and boundaries in server instructions', () => {
     expect(SERVER_INSTRUCTIONS).toContain('codegraph_trace');
     expect(SERVER_INSTRUCTIONS).toContain('nodeId');
     expect(SERVER_INSTRUCTIONS).toContain('file:line');
     expect(SERVER_INSTRUCTIONS).toContain('edge evidence');
+    expect(SERVER_INSTRUCTIONS).toContain('boundary');
   });
 
-  it('mentions trace, precise locators, and edge evidence in installed agent instructions', () => {
+  it('mentions trace, precise locators, edge evidence, and boundaries in installed agent instructions', () => {
     expect(INSTRUCTIONS_TEMPLATE).toContain('codegraph_trace');
     expect(INSTRUCTIONS_TEMPLATE).toContain('nodeId');
     expect(INSTRUCTIONS_TEMPLATE).toContain('file:line');
     expect(INSTRUCTIONS_TEMPLATE).toContain('edge evidence');
+    expect(INSTRUCTIONS_TEMPLATE).toContain('boundary');
   });
 });

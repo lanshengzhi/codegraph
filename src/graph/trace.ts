@@ -2,6 +2,8 @@ import {
   Edge,
   EdgeKind,
   Node,
+  TraceBoundary,
+  TraceBoundaryType,
   TraceEdge,
   TraceOptions,
   TracePath,
@@ -13,6 +15,7 @@ const DEFAULT_EDGE_KINDS: EdgeKind[] = ['calls', 'references', 'imports'];
 const DEFAULT_MAX_DEPTH = 6;
 const DEFAULT_MAX_PATHS = 5;
 const DEFAULT_VISITED_CAP = 1000;
+const DEFAULT_BOUNDARY_CAP = 5;
 
 interface InternalStep {
   node: Node;
@@ -28,6 +31,7 @@ interface QueueItem {
 export interface TraceSearchResult {
   targetCandidates: Node[];
   paths: TracePath[];
+  boundaries: TraceBoundary[];
   gaps: string[];
   recommendations: string[];
   visitedCount: number;
@@ -48,13 +52,14 @@ export class GraphTracer {
     if (filteredTargets.length === 0) {
       gaps.push('No target candidates remain after applying scope/include/exclude path filters.');
       recommendations.push('Relax scopePath/includePaths/excludePaths or inspect the target with codegraph_search.');
-      return { targetCandidates: [], paths: [], gaps, recommendations, visitedCount: 0 };
+      return { targetCandidates: [], paths: [], boundaries: [], gaps, recommendations, visitedCount: 0 };
     }
 
     const targetIds = new Set(filteredTargets.map((n) => n.id));
     const queue: QueueItem[] = [{ node: from, steps: [{ node: from, edge: null }], depth: 0 }];
     const bestDepth = new Map<string, number>([[from.id, 0]]);
     const paths: TracePath[] = [];
+    const frontierBoundaries: TraceBoundary[] = [];
     let visitedCount = 0;
 
     while (queue.length > 0 && paths.length < opts.maxPaths && visitedCount < DEFAULT_VISITED_CAP) {
@@ -67,12 +72,17 @@ export class GraphTracer {
       }
 
       if (item.depth >= opts.maxDepth) {
+        this.addBoundary(
+          frontierBoundaries,
+          this.buildFrontierBoundary('max-depth', item.steps, `Traversal reached maxDepth=${opts.maxDepth} before reaching the target. Increase maxDepth or inspect this frontier node.`)
+        );
         continue;
       }
 
       const adjacent = this.getAdjacentEdges(item.node.id, opts.direction, opts.edgeKinds);
       adjacent.sort((a, b) => this.edgePriority(a.kind) - this.edgePriority(b.kind));
 
+      let enqueued = false;
       for (const edge of adjacent) {
         const nextId = this.nextNodeId(item.node.id, edge, opts.direction);
         if (!nextId) continue;
@@ -92,6 +102,18 @@ export class GraphTracer {
           steps: [...item.steps, { node: nextNode, edge }],
           depth: nextDepth,
         });
+        enqueued = true;
+      }
+
+      if (!enqueued) {
+        this.addBoundary(
+          frontierBoundaries,
+          this.buildFrontierBoundary(
+            'dead-end',
+            item.steps,
+            'No traversable indexed edge continues from this node. This is an unclassified indexed-graph boundary; dynamic calls may exist in source, but raw call expression shape is not recorded in P0b.'
+          )
+        );
       }
     }
 
@@ -99,6 +121,11 @@ export class GraphTracer {
       if (a.steps.length !== b.steps.length) return a.steps.length - b.steps.length;
       return b.confidence - a.confidence;
     });
+
+    const limitedPaths = paths.slice(0, opts.maxPaths);
+    const boundaries = limitedPaths.length > 0
+      ? this.classifyPathBoundaries(limitedPaths)
+      : frontierBoundaries.slice(0, DEFAULT_BOUNDARY_CAP);
 
     if (paths.length === 0) {
       gaps.push(
@@ -112,7 +139,8 @@ export class GraphTracer {
 
     return {
       targetCandidates: filteredTargets,
-      paths: paths.slice(0, opts.maxPaths),
+      paths: limitedPaths,
+      boundaries,
       gaps,
       recommendations,
       visitedCount,
@@ -198,8 +226,106 @@ export class GraphTracer {
     };
   }
 
+  private buildFrontierBoundary(type: 'max-depth' | 'dead-end', steps: InternalStep[], reason: string): TraceBoundary {
+    const current = steps[steps.length - 1]!;
+    const edge = current.edge ? this.toTraceEdge(current.edge) : undefined;
+    const enclosingNode = this.getBoundarySourceNode(current.edge, steps);
+
+    return {
+      type,
+      node: toNodeHandle(current.node),
+      enclosingNode: enclosingNode ? toNodeHandle(enclosingNode) : undefined,
+      edge,
+      reason,
+    };
+  }
+
+  private classifyPathBoundaries(paths: TracePath[]): TraceBoundary[] {
+    const boundaries: TraceBoundary[] = [];
+
+    for (const path of paths) {
+      for (const edge of path.edges) {
+        const type = this.classifyTraceEdgeBoundary(edge);
+        if (!type) continue;
+
+        const targetNode = this.queries.getNodeById(edge.targetNodeId);
+        if (!targetNode) continue;
+        const sourceNode = this.queries.getNodeById(edge.sourceNodeId);
+
+        this.addBoundary(boundaries, {
+          type,
+          node: toNodeHandle(targetNode),
+          enclosingNode: sourceNode ? toNodeHandle(sourceNode) : undefined,
+          edge,
+          reason: this.boundaryReason(type),
+        });
+
+        if (boundaries.length >= DEFAULT_BOUNDARY_CAP) return boundaries;
+      }
+    }
+
+    return boundaries;
+  }
+
+  private classifyTraceEdgeBoundary(edge: TraceEdge): TraceBoundaryType | null {
+    const confidence = edge.confidence;
+    const resolvedBy = edge.resolvedBy;
+
+    if (resolvedBy === 'framework') return 'framework-edge';
+    if (confidence === undefined && resolvedBy === undefined) return 'metadata-not-recorded';
+    if (
+      (confidence !== undefined && confidence < 0.8) ||
+      resolvedBy === 'fuzzy' ||
+      (resolvedBy === 'instance-method' && (confidence === undefined || confidence < 0.8))
+    ) {
+      return 'low-evidence-edge';
+    }
+
+    return null;
+  }
+
+  private boundaryReason(type: TraceBoundaryType): string {
+    switch (type) {
+      case 'low-evidence-edge':
+        return 'This edge was produced by low-evidence static resolution (low confidence, fuzzy, or weak instance-method matching). Inspect source before treating it as a likely runtime path.';
+      case 'framework-edge':
+        return 'Framework resolver produced this edge. It is a static framework pattern candidate, not lifecycle/runtime proof.';
+      case 'metadata-not-recorded':
+        return 'This edge exists in the graph, but resolver confidence/source and call expression evidence were not recorded.';
+      case 'max-depth':
+      case 'dead-end':
+        return 'Trace reached an indexed-graph boundary before reaching the target.';
+    }
+  }
+
+  private getBoundarySourceNode(edge: Edge | null, steps: InternalStep[]): Node | null {
+    if (edge) {
+      const sourceNode = this.queries.getNodeById(edge.source);
+      if (sourceNode) return sourceNode;
+    }
+    return steps.length > 1 ? steps[steps.length - 2]!.node : null;
+  }
+
+  private addBoundary(boundaries: TraceBoundary[], boundary: TraceBoundary): void {
+    if (boundaries.some((existing) => this.boundaryKey(existing) === this.boundaryKey(boundary))) return;
+    if (boundaries.length >= DEFAULT_BOUNDARY_CAP) return;
+    boundaries.push(boundary);
+  }
+
+  private boundaryKey(boundary: TraceBoundary): string {
+    return [
+      boundary.type,
+      boundary.node.nodeId,
+      boundary.edge?.sourceNodeId ?? '',
+      boundary.edge?.targetNodeId ?? '',
+      boundary.edge?.kind ?? '',
+      boundary.edge?.line ?? '',
+      boundary.edge?.column ?? '',
+    ].join('|');
+  }
+
   private toTraceEdge(edge: Edge): TraceEdge {
-    const confidence = edge.metadata && typeof edge.metadata.confidence === 'number'
+    const confidence = edge.metadata && typeof edge.metadata.confidence === 'number' && Number.isFinite(edge.metadata.confidence)
       ? edge.metadata.confidence
       : undefined;
     const resolvedBy = edge.metadata && typeof edge.metadata.resolvedBy === 'string'

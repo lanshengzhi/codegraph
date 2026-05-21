@@ -2,7 +2,7 @@
 
 > 关联设计：[`docs/codegraph-structural-navigation-usability-design.md`](../codegraph-structural-navigation-usability-design.md)  
 > 前置基础：[`docs/codegraph-addressability-and-trace-design.md`](../codegraph-addressability-and-trace-design.md)、[`docs/plans/2026-05-21-codegraph-addressability-and-trace-tdd-plan.md`](./2026-05-21-codegraph-addressability-and-trace-tdd-plan.md)  
-> 状态：roadmap / P0 implemented, P0b+ planning input  
+> 状态：roadmap / P0 and P0b implemented, P1+ planning input
 > 范围：把结构导航可用性设计拆解成可独立验收、可 TDD 实施的计划批次。
 
 ---
@@ -83,7 +83,9 @@
 
 ---
 
-### P0b：动态边界最小版
+### P0b：动态边界最小版（已完成）
+
+**状态：** implemented / validated (2026-05-21)。详见 [`2026-05-21-structural-navigation-p0b-dynamic-boundary-plan.md`](./2026-05-21-structural-navigation-p0b-dynamic-boundary-plan.md) 的实施结果与验收清单。
 
 **目标：** 不要求自动闭合动态绑定链，只把 trace 断点变成可操作线索。
 
@@ -106,6 +108,8 @@
 - constructor option / object field assignment 的完整候选绑定；
 - provider registry 全自动解析；
 - framework lifecycle 全覆盖。
+
+**详细计划：** [`2026-05-21-structural-navigation-p0b-dynamic-boundary-plan.md`](./2026-05-21-structural-navigation-p0b-dynamic-boundary-plan.md)
 
 ---
 
