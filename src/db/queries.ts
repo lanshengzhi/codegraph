@@ -158,6 +158,8 @@ export class QueryBuilder {
     deleteNodesByFile?: SqliteStatement;
     getNodeById?: SqliteStatement;
     getNodesByFile?: SqliteStatement;
+    getNodesContainingLine?: SqliteStatement;
+    getNearbyNodes?: SqliteStatement;
     getNodesByKind?: SqliteStatement;
     insertEdge?: SqliteStatement;
     upsertFile?: SqliteStatement;
@@ -466,6 +468,43 @@ export class QueryBuilder {
       );
     }
     const rows = this.stmts.getNodesByFile.all(filePath) as NodeRow[];
+    return rows.map(rowToNode);
+  }
+
+  /**
+   * Get nodes whose source range contains a line in a file.
+   */
+  getNodesContainingLine(filePath: string, line: number): Node[] {
+    if (!this.stmts.getNodesContainingLine) {
+      this.stmts.getNodesContainingLine = this.db.prepare(
+        `SELECT * FROM nodes
+         WHERE file_path = ? AND start_line <= ? AND end_line >= ?
+         ORDER BY (end_line - start_line) ASC, start_line DESC`
+      );
+    }
+    const rows = this.stmts.getNodesContainingLine.all(filePath, line, line) as NodeRow[];
+    return rows.map(rowToNode);
+  }
+
+  /**
+   * Get nearby nodes in a file when no node covers a requested line.
+   */
+  getNearbyNodes(filePath: string, line: number, limit: number = 5): Node[] {
+    if (!this.stmts.getNearbyNodes) {
+      this.stmts.getNearbyNodes = this.db.prepare(
+        `SELECT * FROM nodes
+         WHERE file_path = ? AND kind != 'file'
+         ORDER BY
+           CASE
+             WHEN ? BETWEEN start_line AND end_line THEN 0
+             WHEN ? < start_line THEN start_line - ?
+             ELSE ? - end_line
+           END ASC,
+           start_line ASC
+         LIMIT ?`
+      );
+    }
+    const rows = this.stmts.getNearbyNodes.all(filePath, line, line, line, line, limit) as NodeRow[];
     return rows.map(rowToNode);
   }
 

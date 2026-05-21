@@ -21,6 +21,10 @@ import {
   TaskContext,
   BuildContextOptions,
   FindRelevantContextOptions,
+  NodeLocator,
+  LocatorResolution,
+  TraceOptions,
+  TraceResult,
 } from './types';
 import { DatabaseConnection, getDatabasePath } from './db';
 import { QueryBuilder } from './db/queries';
@@ -43,13 +47,23 @@ import {
   createResolver,
   ResolutionResult,
 } from './resolution';
-import { GraphTraverser, GraphQueryManager } from './graph';
+import { GraphTraverser, GraphQueryManager, GraphTracer } from './graph';
 import { ContextBuilder, createContextBuilder } from './context';
+import {
+  formatNodeHandle,
+  isQualifiedSymbol,
+  lastQualifierPart,
+  matchesSymbol,
+  normalizeLocatorPath,
+  parseFileLine,
+  toNodeHandle,
+} from './addressability/format';
 import { Mutex, FileLock } from './utils';
 import { FileWatcher, WatchOptions } from './sync';
 
 // Re-export types for consumers
 export * from './types';
+export * from './addressability/format';
 export { getDatabasePath } from './db';
 export {
   getCodeGraphDir,
@@ -616,6 +630,351 @@ export class CodeGraph {
    */
   searchNodes(query: string, options?: SearchOptions): SearchResult[] {
     return this.queries.searchNodes(query, options);
+  }
+
+  /**
+   * Resolve a precise or backward-compatible node locator.
+   */
+  resolveNodeLocator(locator: NodeLocator): LocatorResolution {
+    const normalized = this.normalizeNodeLocator(locator);
+
+    if (normalized.nodeId) {
+      const node = this.queries.getNodeById(normalized.nodeId);
+      if (!node) {
+        return {
+          status: 'not_found',
+          locator: normalized,
+          message: `No node found for nodeId ${normalized.nodeId}`,
+        };
+      }
+      if (normalized.kind && node.kind !== normalized.kind) {
+        return {
+          status: 'not_found',
+          locator: normalized,
+          alternatives: [node],
+          message: `Node ${normalized.nodeId} exists but is kind ${node.kind}, not ${normalized.kind}`,
+        };
+      }
+      return { status: 'resolved', locator: normalized, node };
+    }
+
+    if (normalized.path && normalized.line !== undefined) {
+      return this.resolvePathLineLocator(normalized);
+    }
+
+    if (normalized.qualifiedName) {
+      return this.finalizeLocatorResolution(
+        normalized,
+        this.filterCandidates(
+          this.queries.getNodesByQualifiedNameExact(normalized.qualifiedName),
+          normalized
+        ),
+        `No node found for qualifiedName ${normalized.qualifiedName}`
+      );
+    }
+
+    if (normalized.symbol) {
+      const candidates = this.findLocatorSymbolCandidates(normalized.symbol, normalized);
+      return this.finalizeLocatorResolution(
+        normalized,
+        candidates,
+        `No symbol found for ${normalized.symbol}`
+      );
+    }
+
+    return {
+      status: 'not_found',
+      locator: normalized,
+      message: 'No locator fields provided. Use nodeId, fileLine, path+line, qualifiedName, or symbol.',
+    };
+  }
+
+  /**
+   * Backward-compatible plural alias for callers that want the resolution envelope.
+   */
+  resolveNodeLocators(locator: NodeLocator): LocatorResolution {
+    return this.resolveNodeLocator(locator);
+  }
+
+  /**
+   * Trace candidate static graph paths from an entry locator to a target locator/query.
+   */
+  trace(
+    from: NodeLocator,
+    to?: NodeLocator | string,
+    options: TraceOptions = {}
+  ): TraceResult {
+    const fromResolution = this.resolveNodeLocator(from);
+    const completenessNote = 'Static graph guidance only; dynamic dispatch, callbacks, registries, and dependency injection may hide runtime paths.';
+
+    if (fromResolution.status !== 'resolved' || !fromResolution.node) {
+      return {
+        status: fromResolution.status === 'ambiguous' ? 'ambiguous' : 'not_found',
+        fromResolution,
+        targetCandidates: [],
+        paths: [],
+        gaps: [fromResolution.message ?? `Unable to resolve trace entry (${fromResolution.status}).`],
+        recommendations: this.recommendResolutionFollowup(fromResolution),
+        completenessNote,
+      };
+    }
+
+    const target = this.resolveTraceTarget(to);
+    if (target.targetCandidates.length === 0) {
+      return {
+        status: 'resolved',
+        from: toNodeHandle(fromResolution.node),
+        fromResolution,
+        targetResolution: target.resolution,
+        targetCandidates: [],
+        paths: [],
+        gaps: target.gaps.length > 0 ? target.gaps : ['No target candidates found.'],
+        recommendations: [
+          ...target.recommendations,
+          `Inspect the entry: ${formatNodeHandle(fromResolution.node)}`,
+        ],
+        completenessNote,
+      };
+    }
+
+    const tracer = new GraphTracer(this.queries);
+    const traced = tracer.trace(fromResolution.node, target.targetCandidates, options);
+    const pathRecommendations = traced.paths.length > 0
+      ? this.recommendTraceFollowup(traced.paths[0]!.steps.map((s) => s.node.name))
+      : [];
+
+    return {
+      status: 'resolved',
+      from: toNodeHandle(fromResolution.node),
+      fromResolution,
+      targetResolution: target.resolution,
+      targetCandidates: traced.targetCandidates.map(toNodeHandle),
+      paths: traced.paths,
+      gaps: [...target.gaps, ...traced.gaps],
+      recommendations: [
+        ...target.recommendations,
+        ...traced.recommendations,
+        ...pathRecommendations,
+      ],
+      completenessNote,
+    };
+  }
+
+  private normalizeNodeLocator(locator: NodeLocator): NodeLocator {
+    const normalized: NodeLocator = { ...locator };
+
+    if (normalized.fileLine) {
+      const parsed = parseFileLine(normalized.fileLine);
+      if (parsed) {
+        normalized.path = parsed.path;
+        normalized.line = parsed.line;
+      }
+    }
+
+    if (normalized.path) {
+      normalized.path = normalizeLocatorPath(normalized.path, this.projectRoot);
+    }
+
+    return normalized;
+  }
+
+  private resolvePathLineLocator(locator: NodeLocator): LocatorResolution {
+    const filePath = locator.path!;
+    const line = locator.line!;
+    const containing = this.filterCandidates(
+      this.queries.getNodesContainingLine(filePath, line),
+      locator
+    ).filter((node) => node.kind !== 'file');
+
+    const best = this.pickBestContainingNode(containing);
+    if (best) {
+      return { status: 'resolved', locator, node: best, alternatives: containing.filter((n) => n.id !== best.id).slice(0, 10) };
+    }
+
+    const nearby = this.queries
+      .getNearbyNodes(filePath, line, 5)
+      .filter((node) => node.kind !== 'file' && node.kind !== 'import' && node.kind !== 'export');
+
+    return {
+      status: 'not_found',
+      locator,
+      alternatives: nearby,
+      message: `No symbol covers ${filePath}:${line}`,
+    };
+  }
+
+  private pickBestContainingNode(nodes: Node[]): Node | null {
+    if (nodes.length === 0) return null;
+
+    const priority = (node: Node): number => {
+      switch (node.kind) {
+        case 'method':
+        case 'function':
+        case 'route':
+          return 0;
+        case 'class':
+        case 'struct':
+        case 'interface':
+        case 'trait':
+        case 'protocol':
+        case 'component':
+          return 1;
+        case 'variable':
+        case 'constant':
+        case 'property':
+        case 'field':
+          return 2;
+        case 'import':
+        case 'export':
+          return 9;
+        default:
+          return 4;
+      }
+    };
+
+    return [...nodes].sort((a, b) => {
+      const rangeA = Math.max(0, a.endLine - a.startLine);
+      const rangeB = Math.max(0, b.endLine - b.startLine);
+      if (rangeA !== rangeB) return rangeA - rangeB;
+      const priorityDiff = priority(a) - priority(b);
+      if (priorityDiff !== 0) return priorityDiff;
+      return b.startLine - a.startLine;
+    })[0] ?? null;
+  }
+
+  private findLocatorSymbolCandidates(symbol: string, locator: NodeLocator): Node[] {
+    let candidates: Node[] = [];
+    const pathFilter = locator.path;
+
+    if (pathFilter) {
+      candidates = this.queries.getNodesByFile(pathFilter).filter((node) => matchesSymbol(node, symbol));
+    } else if (isQualifiedSymbol(symbol)) {
+      const tail = lastQualifierPart(symbol);
+      candidates = this.queries.getNodesByName(tail).filter((node) => matchesSymbol(node, symbol));
+      if (candidates.length === 0) {
+        candidates = this.queries.searchNodes(tail, { limit: 50 }).map((r) => r.node).filter((node) => matchesSymbol(node, symbol));
+      }
+    } else {
+      candidates = this.queries.getNodesByName(symbol);
+      if (candidates.length === 0) {
+        candidates = this.queries.searchNodes(symbol, { limit: 20 }).map((r) => r.node);
+      }
+    }
+
+    return this.filterCandidates(candidates, locator);
+  }
+
+  private filterCandidates(candidates: Node[], locator: NodeLocator): Node[] {
+    const seen = new Set<string>();
+    const filtered: Node[] = [];
+    for (const node of candidates) {
+      if (seen.has(node.id)) continue;
+      if (locator.kind && node.kind !== locator.kind) continue;
+      if (locator.path && normalizeLocatorPath(node.filePath, this.projectRoot) !== locator.path) continue;
+      seen.add(node.id);
+      filtered.push(node);
+    }
+    return filtered.sort((a, b) => {
+      if (a.filePath !== b.filePath) return a.filePath.localeCompare(b.filePath);
+      if (a.startLine !== b.startLine) return a.startLine - b.startLine;
+      return a.name.localeCompare(b.name);
+    });
+  }
+
+  private finalizeLocatorResolution(locator: NodeLocator, candidates: Node[], notFoundMessage: string): LocatorResolution {
+    if (candidates.length === 0) {
+      return { status: 'not_found', locator, message: notFoundMessage };
+    }
+    if (candidates.length === 1) {
+      return { status: 'resolved', locator, node: candidates[0] };
+    }
+    return {
+      status: 'ambiguous',
+      locator,
+      alternatives: candidates,
+      message: `Locator matched ${candidates.length} nodes. Use nodeId or fileLine to disambiguate.`,
+    };
+  }
+
+  private resolveTraceTarget(to?: NodeLocator | string): {
+    resolution?: LocatorResolution;
+    targetCandidates: Node[];
+    gaps: string[];
+    recommendations: string[];
+  } {
+    if (to === undefined) {
+      return {
+        targetCandidates: [],
+        gaps: ['No trace target provided.'],
+        recommendations: ['Provide a target symbol/query or exact target locator.'],
+      };
+    }
+
+    if (typeof to === 'string') {
+      const resolution = this.resolveNodeLocator({ symbol: to });
+      if (resolution.status === 'resolved' && resolution.node) {
+        return { resolution, targetCandidates: [resolution.node], gaps: [], recommendations: [] };
+      }
+      if (resolution.status === 'ambiguous' && resolution.alternatives) {
+        return {
+          resolution,
+          targetCandidates: resolution.alternatives,
+          gaps: [`Target symbol "${to}" is ambiguous; tracing to ${resolution.alternatives.length} candidates.`],
+          recommendations: this.recommendResolutionFollowup(resolution),
+        };
+      }
+      const searchCandidates = this.queries.searchNodes(to, { limit: 20 }).map((r) => r.node);
+      return {
+        resolution,
+        targetCandidates: searchCandidates,
+        gaps: searchCandidates.length === 0 ? [`No target candidates found for "${to}".`] : [],
+        recommendations: searchCandidates.length === 0 ? [`Try codegraph_search with a narrower query than "${to}".`] : [],
+      };
+    }
+
+    const resolution = this.resolveNodeLocator(to);
+    if (resolution.status === 'resolved' && resolution.node) {
+      return { resolution, targetCandidates: [resolution.node], gaps: [], recommendations: [] };
+    }
+    if (resolution.status === 'ambiguous' && resolution.alternatives) {
+      return {
+        resolution,
+        targetCandidates: resolution.alternatives,
+        gaps: ['Target locator is ambiguous; tracing to all candidate targets.'],
+        recommendations: this.recommendResolutionFollowup(resolution),
+      };
+    }
+    return {
+      resolution,
+      targetCandidates: [],
+      gaps: [resolution.message ?? 'Target locator was not found.'],
+      recommendations: this.recommendResolutionFollowup(resolution),
+    };
+  }
+
+  private recommendResolutionFollowup(resolution: LocatorResolution): string[] {
+    if (resolution.status === 'ambiguous' && resolution.alternatives && resolution.alternatives.length > 0) {
+      return [
+        'Resolve ambiguity with an exact handle:',
+        ...resolution.alternatives.slice(0, 10).map((node) => `- ${formatNodeHandle(node)}`),
+      ];
+    }
+    if (resolution.alternatives && resolution.alternatives.length > 0) {
+      return [
+        'Nearby alternatives:',
+        ...resolution.alternatives.slice(0, 5).map((node) => `- ${formatNodeHandle(node)}`),
+      ];
+    }
+    return [];
+  }
+
+  private recommendTraceFollowup(pathNames: string[]): string[] {
+    if (pathNames.length === 0) return [];
+    const uniqueNames = Array.from(new Set(pathNames));
+    return [
+      `Recommended next: codegraph_explore query "${uniqueNames.join(' ')}"`,
+      'Use codegraph_node with a returned nodeId for exact source ranges.',
+    ];
   }
 
   // ===========================================================================

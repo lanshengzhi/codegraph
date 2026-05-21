@@ -7,6 +7,16 @@ a [GitHub Release](https://github.com/colbymchenry/codegraph/releases) tagged
 This project follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **MCP / addressability**: Search, node, caller/callee, and impact results now expose copyable exact handles (`nodeId`, `qualifiedName`, and `range=file:line-line`). `codegraph_node`, `codegraph_callers`, `codegraph_callees`, and `codegraph_impact` can use those handles directly via `nodeId`, `qualifiedName`, `path`+`line`, or `fileLine`, so same-name symbols no longer require fuzzy re-resolution.
+- **MCP / trace**: New `codegraph_trace` tool returns candidate static graph paths from an entry locator to a target symbol/query/locator, including path steps, edge kinds, callsite lines when available, caveats, and recommended exact follow-ups.
+
+### Changed
+- **MCP / ambiguity**: Symbol-only ambiguous results now list alternatives with copyable exact handles instead of only `path:start` locations.
+- **Agent guidance**: Installed instructions and MCP server instructions now teach agents to reuse `nodeId`/`file:line` handles and use `codegraph_trace` for lifecycle or entry-to-target flow questions.
+
 ## [0.9.4] - 2026-05-22
 
 ### Fixed

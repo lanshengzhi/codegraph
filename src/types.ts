@@ -189,6 +189,123 @@ export interface Edge {
   provenance?: 'tree-sitter' | 'scip' | 'heuristic';
 }
 
+// =============================================================================
+// Addressability and Trace Types
+// =============================================================================
+
+/**
+ * A reusable way to locate a node without fuzzy search.
+ */
+export interface NodeLocator {
+  /** Exact opaque node ID from the current index */
+  nodeId?: string;
+
+  /** Exact fully qualified node name */
+  qualifiedName?: string;
+
+  /** Backward-compatible symbol/name lookup */
+  symbol?: string;
+
+  /** File path relative to project root */
+  path?: string;
+
+  /** 1-indexed source line for path-based lookup */
+  line?: number;
+
+  /** Convenience source location, e.g. "src/a.ts:123" */
+  fileLine?: string;
+
+  /** Optional kind constraint */
+  kind?: NodeKind;
+}
+
+/**
+ * Compact, copyable node identity for tool follow-ups.
+ */
+export interface NodeHandle {
+  nodeId: string;
+  name: string;
+  kind: NodeKind;
+  qualifiedName: string;
+  path: string;
+  startLine: number;
+  endLine: number;
+  signature?: string;
+}
+
+export type LocatorResolutionStatus = 'resolved' | 'ambiguous' | 'not_found';
+
+/**
+ * Result of resolving a NodeLocator against the current index.
+ */
+export interface LocatorResolution {
+  status: LocatorResolutionStatus;
+  locator: NodeLocator;
+  node?: Node;
+  alternatives?: Node[];
+  message?: string;
+}
+
+/**
+ * Options for static graph tracing between nodes.
+ */
+export interface TraceOptions {
+  maxDepth?: number;
+  maxPaths?: number;
+  edgeKinds?: EdgeKind[];
+  direction?: 'outgoing' | 'incoming' | 'both';
+  includePaths?: string[];
+  excludePaths?: string[];
+  scopePath?: string;
+}
+
+/**
+ * Edge metadata shown in a trace path.
+ */
+export interface TraceEdge {
+  sourceNodeId: string;
+  targetNodeId: string;
+  kind: EdgeKind;
+  line?: number;
+  column?: number;
+  provenance?: Edge['provenance'];
+}
+
+/**
+ * One node in a trace path. `via` is the edge used to reach this step.
+ */
+export interface TraceStep {
+  node: NodeHandle;
+  via?: TraceEdge;
+}
+
+/**
+ * Candidate path returned by trace.
+ */
+export interface TracePath {
+  steps: TraceStep[];
+  edges: TraceEdge[];
+  confidence: number;
+  reason: string;
+}
+
+export type TraceStatus = 'resolved' | 'ambiguous' | 'not_found';
+
+/**
+ * Static graph trace result. It is guidance over indexed edges, not runtime proof.
+ */
+export interface TraceResult {
+  status: TraceStatus;
+  from?: NodeHandle;
+  fromResolution: LocatorResolution;
+  targetResolution?: LocatorResolution;
+  targetCandidates: NodeHandle[];
+  paths: TracePath[];
+  gaps: string[];
+  recommendations: string[];
+  completenessNote: string;
+}
+
 /**
  * Metadata about a tracked file
  */

@@ -5,7 +5,20 @@
  */
 
 import CodeGraph, { findNearestCodeGraphRoot } from '../index';
-import type { Node, Edge, SearchResult, Subgraph, TaskContext, NodeKind } from '../types';
+import type {
+  Node,
+  Edge,
+  SearchResult,
+  Subgraph,
+  TaskContext,
+  NodeKind,
+  NodeLocator,
+  LocatorResolution,
+  EdgeKind,
+  TraceOptions,
+  TraceResult,
+} from '../types';
+import { formatNodeHandle, matchesSymbol as nodeMatchesSymbol } from '../addressability/format';
 import { createHash } from 'crypto';
 import {
   constants as fsConstants,
@@ -271,6 +284,7 @@ interface PropertySchema {
   description: string;
   enum?: string[];
   default?: unknown;
+  items?: { type: string; enum?: string[] };
 }
 
 /**
@@ -291,6 +305,53 @@ const projectPathProperty: PropertySchema = {
   type: 'string',
   description: 'Path to a different project with .codegraph/ initialized. If omitted, uses current project. Use this to query other codebases.',
 };
+
+const locatorProperties: Record<string, PropertySchema> = {
+  symbol: {
+    type: 'string',
+    description: 'Backward-compatible symbol/name lookup. Prefer nodeId or fileLine when available.',
+  },
+  nodeId: {
+    type: 'string',
+    description: 'Exact opaque node ID from a previous CodeGraph result handle.',
+  },
+  qualifiedName: {
+    type: 'string',
+    description: 'Exact qualifiedName from a previous CodeGraph result handle.',
+  },
+  path: {
+    type: 'string',
+    description: 'Project-relative file path for path+line lookup.',
+  },
+  line: {
+    type: 'number',
+    description: '1-indexed source line for path+line lookup.',
+  },
+  fileLine: {
+    type: 'string',
+    description: 'Convenience source location such as "src/a.ts:123" or "src/a.ts:123:9".',
+  },
+};
+
+const traceLocatorProperties: Record<string, PropertySchema> = {
+  from: { type: 'string', description: 'Entry symbol/query shorthand. Prefer fromNodeId/fromFileLine when available.' },
+  fromNodeId: { type: 'string', description: 'Exact entry nodeId.' },
+  fromQualifiedName: { type: 'string', description: 'Exact entry qualifiedName.' },
+  fromPath: { type: 'string', description: 'Entry file path for fromPath+fromLine lookup.' },
+  fromLine: { type: 'number', description: 'Entry source line for fromPath+fromLine lookup.' },
+  fromFileLine: { type: 'string', description: 'Entry source location, e.g. "src/a.ts:123".' },
+  to: { type: 'string', description: 'Target symbol/query shorthand.' },
+  toNodeId: { type: 'string', description: 'Exact target nodeId.' },
+  toQualifiedName: { type: 'string', description: 'Exact target qualifiedName.' },
+  toPath: { type: 'string', description: 'Target file path for toPath+toLine lookup.' },
+  toLine: { type: 'number', description: 'Target source line for toPath+toLine lookup.' },
+  toFileLine: { type: 'string', description: 'Target source location, e.g. "src/a.ts:123".' },
+};
+
+const EDGE_KIND_VALUES: EdgeKind[] = [
+  'contains', 'calls', 'imports', 'exports', 'extends', 'implements', 'references',
+  'type_of', 'returns', 'instantiates', 'overrides', 'decorates',
+];
 
 /**
  * All CodeGraph MCP tools
@@ -353,14 +414,11 @@ export const tools: ToolDefinition[] = [
   },
   {
     name: 'codegraph_callers',
-    description: 'Find all functions/methods that call a specific symbol. Useful for understanding usage patterns and impact of changes.',
+    description: 'Find all functions/methods that call a specific symbol or exact locator. Accepts symbol, nodeId, qualifiedName, path+line, or fileLine.',
     inputSchema: {
       type: 'object',
       properties: {
-        symbol: {
-          type: 'string',
-          description: 'Name of the function, method, or class to find callers for',
-        },
+        ...locatorProperties,
         limit: {
           type: 'number',
           description: 'Maximum number of callers to return (default: 20)',
@@ -368,19 +426,15 @@ export const tools: ToolDefinition[] = [
         },
         projectPath: projectPathProperty,
       },
-      required: ['symbol'],
     },
   },
   {
     name: 'codegraph_callees',
-    description: 'Find all functions/methods that a specific symbol calls. Useful for understanding dependencies and code flow.',
+    description: 'Find all functions/methods that a specific symbol or exact locator calls. Accepts symbol, nodeId, qualifiedName, path+line, or fileLine.',
     inputSchema: {
       type: 'object',
       properties: {
-        symbol: {
-          type: 'string',
-          description: 'Name of the function, method, or class to find callees for',
-        },
+        ...locatorProperties,
         limit: {
           type: 'number',
           description: 'Maximum number of callees to return (default: 20)',
@@ -388,19 +442,15 @@ export const tools: ToolDefinition[] = [
         },
         projectPath: projectPathProperty,
       },
-      required: ['symbol'],
     },
   },
   {
     name: 'codegraph_impact',
-    description: 'Analyze the impact radius of changing a symbol. Shows what code could be affected by modifications.',
+    description: 'Analyze the impact radius of changing a symbol or exact locator. Accepts symbol, nodeId, qualifiedName, path+line, or fileLine.',
     inputSchema: {
       type: 'object',
       properties: {
-        symbol: {
-          type: 'string',
-          description: 'Name of the symbol to analyze impact for',
-        },
+        ...locatorProperties,
         depth: {
           type: 'number',
           description: 'How many levels of dependencies to traverse (default: 2)',
@@ -408,19 +458,15 @@ export const tools: ToolDefinition[] = [
         },
         projectPath: projectPathProperty,
       },
-      required: ['symbol'],
     },
   },
   {
     name: 'codegraph_node',
-    description: 'Get detailed info about ONE symbol (location, signature, docstring). Pass includeCode=true for source: a function/method returns its body; a class/interface/struct/enum returns a compact member OUTLINE (fields + method signatures + line numbers), not every method body — Read or codegraph_node a specific member for its body. Keep includeCode=false to minimize context. For SEVERAL related symbols, make ONE codegraph_explore (or codegraph_context) call instead of many node calls — repeated node calls each re-read the whole context and cost far more.',
+    description: 'Get detailed info about ONE symbol or exact locator (location, range, handle, signature, docstring). Accepts symbol, nodeId, qualifiedName, path+line, or fileLine. Pass includeCode=true for source: a function/method returns its body; a class/interface/struct/enum returns a compact member OUTLINE.',
     inputSchema: {
       type: 'object',
       properties: {
-        symbol: {
-          type: 'string',
-          description: 'Name of the symbol to get details for',
-        },
+        ...locatorProperties,
         includeCode: {
           type: 'boolean',
           description: 'Include full source code (default: false to minimize context)',
@@ -428,7 +474,6 @@ export const tools: ToolDefinition[] = [
         },
         projectPath: projectPathProperty,
       },
-      required: ['symbol'],
     },
   },
   {
@@ -449,6 +494,52 @@ export const tools: ToolDefinition[] = [
         projectPath: projectPathProperty,
       },
       required: ['query'],
+    },
+  },
+  {
+    name: 'codegraph_trace',
+    description: 'Trace likely static graph paths from an entry locator to a target symbol/query/locator. Returns ordered path steps with nodeId/range handles, edge kinds, callsite lines when available, gaps, and recommended next inspections. This is guidance over the indexed graph, not runtime proof.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ...traceLocatorProperties,
+        scopePath: {
+          type: 'string',
+          description: 'Restrict traversal and target candidates to a path prefix/scope.',
+        },
+        includePaths: {
+          type: 'array',
+          description: 'Only include nodes under these path prefixes.',
+          items: { type: 'string' },
+        },
+        excludePaths: {
+          type: 'array',
+          description: 'Exclude nodes under these path prefixes.',
+          items: { type: 'string' },
+        },
+        maxDepth: {
+          type: 'number',
+          description: 'Maximum traversal depth (default: 6)',
+          default: 6,
+        },
+        maxPaths: {
+          type: 'number',
+          description: 'Maximum paths to return (default: 5)',
+          default: 5,
+        },
+        edgeKinds: {
+          type: 'array',
+          description: 'Edge kinds to traverse (default: calls, references, imports)',
+          items: { type: 'string', enum: EDGE_KIND_VALUES },
+        },
+        direction: {
+          type: 'string',
+          description: 'Traversal direction (default: outgoing)',
+          enum: ['outgoing', 'incoming', 'both'],
+          default: 'outgoing',
+        },
+        projectPath: projectPathProperty,
+      },
     },
   },
   {
@@ -647,6 +738,10 @@ export class ToolHandler {
     this.projectCache.clear();
   }
 
+  private isToolResult(value: unknown): value is ToolResult {
+    return Boolean(value) && typeof value === 'object' && Array.isArray((value as ToolResult).content);
+  }
+
   /**
    * Validate that a value is a non-empty string within length bounds.
    *
@@ -728,6 +823,8 @@ export class ToolHandler {
           return await this.handleImpact(args);
         case 'codegraph_explore':
           return await this.handleExplore(args);
+        case 'codegraph_trace':
+          return await this.handleTrace(args);
         case 'codegraph_node':
           return await this.handleNode(args);
         case 'codegraph_status':
@@ -837,21 +934,20 @@ export class ToolHandler {
    * Handle codegraph_callers
    */
   private async handleCallers(args: Record<string, unknown>): Promise<ToolResult> {
-    const symbol = this.validateString(args.symbol, 'symbol');
-    if (typeof symbol !== 'string') return symbol;
+    const locator = this.argsToLocator(args);
+    if (this.isToolResult(locator)) return locator;
 
     const cg = this.getCodeGraph(args.projectPath as string | undefined);
     const limit = clamp((args.limit as number) || 20, 1, 100);
 
-    const allMatches = this.findAllSymbols(cg, symbol);
-    if (allMatches.nodes.length === 0) {
-      return this.textResult(`Symbol "${symbol}" not found in the codebase`);
+    const roots = this.resolveCallGraphRoots(cg, locator);
+    if (roots.nodes.length === 0) {
+      return this.textResult(roots.note.trim() || `Symbol or locator "${this.locatorLabel(locator)}" not found in the codebase`);
     }
 
-    // Aggregate callers across all matching symbols
     const seen = new Set<string>();
     const allCallers: Node[] = [];
-    for (const node of allMatches.nodes) {
+    for (const node of roots.nodes) {
       for (const c of cg.getCallers(node.id)) {
         if (!seen.has(c.node.id)) {
           seen.add(c.node.id);
@@ -860,11 +956,12 @@ export class ToolHandler {
       }
     }
 
+    const label = this.locatorLabel(locator);
     if (allCallers.length === 0) {
-      return this.textResult(`No callers found for "${symbol}"${allMatches.note}`);
+      return this.textResult(`No callers found for "${label}"${roots.note}`);
     }
 
-    const formatted = this.formatNodeList(allCallers.slice(0, limit), `Callers of ${symbol}`) + allMatches.note;
+    const formatted = this.formatNodeList(allCallers.slice(0, limit), `Callers of ${label}`) + roots.note;
     return this.textResult(this.truncateOutput(formatted));
   }
 
@@ -872,21 +969,20 @@ export class ToolHandler {
    * Handle codegraph_callees
    */
   private async handleCallees(args: Record<string, unknown>): Promise<ToolResult> {
-    const symbol = this.validateString(args.symbol, 'symbol');
-    if (typeof symbol !== 'string') return symbol;
+    const locator = this.argsToLocator(args);
+    if (this.isToolResult(locator)) return locator;
 
     const cg = this.getCodeGraph(args.projectPath as string | undefined);
     const limit = clamp((args.limit as number) || 20, 1, 100);
 
-    const allMatches = this.findAllSymbols(cg, symbol);
-    if (allMatches.nodes.length === 0) {
-      return this.textResult(`Symbol "${symbol}" not found in the codebase`);
+    const roots = this.resolveCallGraphRoots(cg, locator);
+    if (roots.nodes.length === 0) {
+      return this.textResult(roots.note.trim() || `Symbol or locator "${this.locatorLabel(locator)}" not found in the codebase`);
     }
 
-    // Aggregate callees across all matching symbols
     const seen = new Set<string>();
     const allCallees: Node[] = [];
-    for (const node of allMatches.nodes) {
+    for (const node of roots.nodes) {
       for (const c of cg.getCallees(node.id)) {
         if (!seen.has(c.node.id)) {
           seen.add(c.node.id);
@@ -895,11 +991,12 @@ export class ToolHandler {
       }
     }
 
+    const label = this.locatorLabel(locator);
     if (allCallees.length === 0) {
-      return this.textResult(`No callees found for "${symbol}"${allMatches.note}`);
+      return this.textResult(`No callees found for "${label}"${roots.note}`);
     }
 
-    const formatted = this.formatNodeList(allCallees.slice(0, limit), `Callees of ${symbol}`) + allMatches.note;
+    const formatted = this.formatNodeList(allCallees.slice(0, limit), `Callees of ${label}`) + roots.note;
     return this.textResult(this.truncateOutput(formatted));
   }
 
@@ -907,23 +1004,22 @@ export class ToolHandler {
    * Handle codegraph_impact
    */
   private async handleImpact(args: Record<string, unknown>): Promise<ToolResult> {
-    const symbol = this.validateString(args.symbol, 'symbol');
-    if (typeof symbol !== 'string') return symbol;
+    const locator = this.argsToLocator(args);
+    if (this.isToolResult(locator)) return locator;
 
     const cg = this.getCodeGraph(args.projectPath as string | undefined);
     const depth = clamp((args.depth as number) || 2, 1, 10);
 
-    const allMatches = this.findAllSymbols(cg, symbol);
-    if (allMatches.nodes.length === 0) {
-      return this.textResult(`Symbol "${symbol}" not found in the codebase`);
+    const roots = this.resolveCallGraphRoots(cg, locator);
+    if (roots.nodes.length === 0) {
+      return this.textResult(roots.note.trim() || `Symbol or locator "${this.locatorLabel(locator)}" not found in the codebase`);
     }
 
-    // Aggregate impact across all matching symbols
     const mergedNodes = new Map<string, Node>();
     const mergedEdges: Edge[] = [];
     const seenEdges = new Set<string>();
 
-    for (const node of allMatches.nodes) {
+    for (const node of roots.nodes) {
       const impact = cg.getImpactRadius(node.id, depth);
       for (const [id, n] of impact.nodes) {
         mergedNodes.set(id, n);
@@ -940,10 +1036,10 @@ export class ToolHandler {
     const mergedImpact = {
       nodes: mergedNodes,
       edges: mergedEdges,
-      roots: allMatches.nodes.map(n => n.id),
+      roots: roots.nodes.map((n: Node) => n.id),
     };
 
-    const formatted = this.formatImpact(symbol, mergedImpact) + allMatches.note;
+    const formatted = this.formatImpact(this.locatorLabel(locator), mergedImpact) + roots.note;
     return this.textResult(this.truncateOutput(formatted));
   }
 
@@ -1399,19 +1495,46 @@ export class ToolHandler {
   }
 
   /**
+   * Handle codegraph_trace
+   */
+  private async handleTrace(args: Record<string, unknown>): Promise<ToolResult> {
+    const from = this.argsToTraceLocator(args, 'from');
+    if (this.isToolResult(from)) return from;
+
+    const to = this.argsToTraceTarget(args);
+    if (to && typeof to !== 'string' && this.isToolResult(to)) return to;
+
+    const cg = this.getCodeGraph(args.projectPath as string | undefined);
+    const options = this.argsToTraceOptions(args);
+    if (this.isToolResult(options)) return options;
+
+    const result = cg.trace(from, to, options);
+    return this.textResult(this.truncateOutput(this.formatTraceResult(result)));
+  }
+
+  /**
    * Handle codegraph_node
    */
   private async handleNode(args: Record<string, unknown>): Promise<ToolResult> {
-    const symbol = this.validateString(args.symbol, 'symbol');
-    if (typeof symbol !== 'string') return symbol;
+    const locator = this.argsToLocator(args);
+    if (this.isToolResult(locator)) return locator;
 
     const cg = this.getCodeGraph(args.projectPath as string | undefined);
     // Default to false to minimize context usage
     const includeCode = args.includeCode === true;
 
-    const match = this.findSymbol(cg, symbol);
-    if (!match) {
-      return this.textResult(`Symbol "${symbol}" not found in the codebase`);
+    let match: { node: Node; note: string } | null;
+    if (this.isSymbolOnlyLocator(locator)) {
+      match = this.findSymbol(cg, locator.symbol!);
+      if (!match) {
+        return this.textResult(`Symbol "${locator.symbol}" not found in the codebase`);
+      }
+    } else {
+      const resolution = cg.resolveNodeLocator(locator);
+      if (resolution.status !== 'resolved' || !resolution.node) {
+        return this.textResult(this.formatResolutionFailure(resolution));
+      }
+      match = { node: resolution.node, note: '' };
     }
 
     let code: string | null = null;
@@ -1680,6 +1803,177 @@ export class ToolHandler {
   // Symbol resolution helpers
   // =========================================================================
 
+  private argsToLocator(args: Record<string, unknown>): NodeLocator | ToolResult {
+    const locator: NodeLocator = {};
+    let hasField = false;
+
+    const readString = (key: keyof NodeLocator): ToolResult | undefined => {
+      const value = args[key];
+      if (value === undefined) return undefined;
+      hasField = true;
+      const valid = this.validateString(value, key);
+      if (typeof valid !== 'string') return valid;
+      (locator as Record<string, unknown>)[key] = valid;
+      return undefined;
+    };
+
+    for (const key of ['symbol', 'nodeId', 'qualifiedName', 'path', 'fileLine'] as Array<keyof NodeLocator>) {
+      const error = readString(key);
+      if (error) return error;
+    }
+
+    if (args.line !== undefined) {
+      hasField = true;
+      const line = Number(args.line);
+      if (!Number.isInteger(line) || line <= 0) {
+        return this.errorResult('line must be a positive integer');
+      }
+      locator.line = line;
+    }
+
+    if (!hasField) {
+      return this.errorResult('At least one locator field is required: nodeId, fileLine, path+line, qualifiedName, or symbol');
+    }
+
+    return locator;
+  }
+
+  private isSymbolOnlyLocator(locator: NodeLocator): boolean {
+    return Boolean(locator.symbol) &&
+      !locator.nodeId &&
+      !locator.qualifiedName &&
+      !locator.path &&
+      locator.line === undefined &&
+      !locator.fileLine;
+  }
+
+  private locatorLabel(locator: NodeLocator): string {
+    if (locator.nodeId) return `nodeId=${locator.nodeId}`;
+    if (locator.fileLine) return locator.fileLine;
+    if (locator.path && locator.line !== undefined) return `${locator.path}:${locator.line}`;
+    if (locator.qualifiedName) return locator.qualifiedName;
+    if (locator.symbol) return locator.symbol;
+    return 'locator';
+  }
+
+  private resolveCallGraphRoots(cg: CodeGraph, locator: NodeLocator): { nodes: Node[]; note: string } {
+    if (this.isSymbolOnlyLocator(locator)) {
+      return this.findAllSymbols(cg, locator.symbol!);
+    }
+
+    const resolution = cg.resolveNodeLocator(locator);
+    if (resolution.status !== 'resolved' || !resolution.node) {
+      return { nodes: [], note: this.formatResolutionFailure(resolution) };
+    }
+    return { nodes: [resolution.node], note: '' };
+  }
+
+  private argsToTraceLocator(args: Record<string, unknown>, prefix: 'from' | 'to'): NodeLocator | ToolResult {
+    const locator: NodeLocator = {};
+    let hasField = false;
+
+    const shorthand = args[prefix];
+    if (shorthand !== undefined) {
+      hasField = true;
+      const valid = this.validateString(shorthand, prefix);
+      if (typeof valid !== 'string') return valid;
+      locator.symbol = valid;
+    }
+
+    const stringFields: Array<[string, keyof NodeLocator]> = [
+      [`${prefix}NodeId`, 'nodeId'],
+      [`${prefix}QualifiedName`, 'qualifiedName'],
+      [`${prefix}Path`, 'path'],
+      [`${prefix}FileLine`, 'fileLine'],
+    ];
+
+    for (const [argName, locatorKey] of stringFields) {
+      const value = args[argName];
+      if (value === undefined) continue;
+      hasField = true;
+      const valid = this.validateString(value, argName);
+      if (typeof valid !== 'string') return valid;
+      (locator as Record<string, unknown>)[locatorKey] = valid;
+    }
+
+    const lineArg = args[`${prefix}Line`];
+    if (lineArg !== undefined) {
+      hasField = true;
+      const line = Number(lineArg);
+      if (!Number.isInteger(line) || line <= 0) {
+        return this.errorResult(`${prefix}Line must be a positive integer`);
+      }
+      locator.line = line;
+    }
+
+    if (!hasField) {
+      return this.errorResult(`${prefix} locator is required`);
+    }
+
+    return locator;
+  }
+
+  private argsToTraceTarget(args: Record<string, unknown>): NodeLocator | string | undefined | ToolResult {
+    const hasTarget = ['to', 'toNodeId', 'toQualifiedName', 'toPath', 'toLine', 'toFileLine']
+      .some((key) => args[key] !== undefined);
+    if (!hasTarget) return undefined;
+
+    const locator = this.argsToTraceLocator(args, 'to');
+    if (this.isToolResult(locator)) return locator;
+
+    if (locator.symbol && this.isSymbolOnlyLocator(locator)) {
+      return locator.symbol;
+    }
+    return locator;
+  }
+
+  private argsToTraceOptions(args: Record<string, unknown>): TraceOptions | ToolResult {
+    const direction = args.direction as string | undefined;
+    if (direction && !['outgoing', 'incoming', 'both'].includes(direction)) {
+      return this.errorResult('direction must be outgoing, incoming, or both');
+    }
+
+    const edgeKinds = this.parseStringArray(args.edgeKinds, 'edgeKinds');
+    if (this.isToolResult(edgeKinds)) return edgeKinds;
+    const invalidEdgeKind = edgeKinds.find((kind: string) => !(EDGE_KIND_VALUES as string[]).includes(kind));
+    if (invalidEdgeKind) return this.errorResult(`Invalid edge kind: ${invalidEdgeKind}`);
+
+    const includePaths = this.parseStringArray(args.includePaths, 'includePaths');
+    if (this.isToolResult(includePaths)) return includePaths;
+    const excludePaths = this.parseStringArray(args.excludePaths, 'excludePaths');
+    if (this.isToolResult(excludePaths)) return excludePaths;
+
+    const options: TraceOptions = {
+      maxDepth: args.maxDepth !== undefined ? clamp(Number(args.maxDepth), 1, 20) : undefined,
+      maxPaths: args.maxPaths !== undefined ? clamp(Number(args.maxPaths), 1, 20) : undefined,
+      edgeKinds: edgeKinds.length > 0 ? edgeKinds as EdgeKind[] : undefined,
+      direction: direction as TraceOptions['direction'] | undefined,
+      includePaths: includePaths.length > 0 ? includePaths : undefined,
+      excludePaths: excludePaths.length > 0 ? excludePaths : undefined,
+      scopePath: typeof args.scopePath === 'string' ? args.scopePath : undefined,
+    };
+
+    if (args.scopePath !== undefined && typeof args.scopePath !== 'string') {
+      return this.errorResult('scopePath must be a string');
+    }
+
+    return options;
+  }
+
+  private parseStringArray(value: unknown, name: string): string[] | ToolResult {
+    if (value === undefined) return [];
+    if (typeof value === 'string') return value.split(',').map((v) => v.trim()).filter(Boolean);
+    if (!Array.isArray(value)) return this.errorResult(`${name} must be an array of strings`);
+    const result: string[] = [];
+    for (const item of value) {
+      if (typeof item !== 'string' || item.length === 0) {
+        return this.errorResult(`${name} must be an array of non-empty strings`);
+      }
+      result.push(item);
+    }
+    return result;
+  }
+
   /**
    * Find a symbol by name, handling disambiguation when multiple matches exist.
    * Returns the best match and a note about alternatives if any.
@@ -1703,40 +1997,7 @@ export class ToolHandler {
    *      Python — `stage_apply::run` matches a `run` in `stage_apply.rs`)
    */
   private matchesSymbol(node: Node, symbol: string): boolean {
-    // Simple name match
-    if (node.name === symbol) return true;
-    // File basename match (e.g., "product-card" matches "product-card.liquid")
-    if (node.kind === 'file' && node.name.replace(/\.[^.]+$/, '') === symbol) return true;
-
-    // Qualified-name lookups: split on any supported separator. `\w` keeps
-    // identifier chars (incl. `_`) intact; everything else is treated as
-    // a separator we tolerate.
-    if (!/[.\/]|::/.test(symbol)) return false;
-    const parts = symbol.split(/::|[./]/).filter((p) => p.length > 0);
-    if (parts.length < 2) return false;
-
-    const lastPart = parts[parts.length - 1]!;
-    if (node.name !== lastPart) return false;
-
-    // Stage 1: qualified-name suffix match. The extractor joins the
-    // semantic hierarchy with `::`, so `Session.request` and
-    // `Session::request` both become `Session::request` here.
-    const colonSuffix = parts.join('::');
-    if (node.qualifiedName.includes(colonSuffix)) return true;
-
-    // Stage 2: file-path containment. Rust modules and Python packages
-    // are not in `qualifiedName` — they're encoded in the file path. So
-    // `stage_apply::run` matches a `run` in any file whose path
-    // contains a `stage_apply` segment (with or without an extension).
-    //
-    // Filter out Rust path prefixes that have no file-system equivalent.
-    const containerHints = parts.slice(0, -1).filter((p) => !RUST_PATH_PREFIXES.has(p));
-    if (containerHints.length === 0) return false;
-
-    const segments = node.filePath.split('/').filter((s) => s.length > 0);
-    return containerHints.every((hint) =>
-      segments.some((seg) => seg === hint || seg.replace(/\.[^.]+$/, '') === hint)
-    );
+    return nodeMatchesSymbol(node, symbol);
   }
 
   private findSymbol(cg: CodeGraph, symbol: string): { node: Node; note: string } | null {
@@ -1766,12 +2027,11 @@ export class ToolHandler {
     }
 
     if (exactMatches.length > 1) {
-      // Multiple exact matches - pick first, note the others
+      // Multiple exact matches - pick first for backward compatibility, but
+      // include copyable handles for exact follow-up.
       const picked = exactMatches[0]!.node;
-      const others = exactMatches.slice(1).map(r =>
-        `${r.node.name} (${r.node.kind}) at ${r.node.filePath}:${r.node.startLine}`
-      );
-      const note = `\n\n> **Note:** ${exactMatches.length} symbols named "${symbol}". Showing results for \`${picked.filePath}:${picked.startLine}\`. Others: ${others.join(', ')}`;
+      const alternatives = exactMatches.map(r => r.node);
+      const note = this.formatAmbiguity(alternatives, symbol, `Showing first match: ${formatNodeHandle(picked)}`);
       return { node: picked, note };
     }
 
@@ -1809,11 +2069,119 @@ export class ToolHandler {
       return { nodes: [node], note: '' };
     }
 
-    const locations = exactMatches.map(r =>
-      `${r.node.kind} at ${r.node.filePath}:${r.node.startLine}`
+    const nodes = exactMatches.map(r => r.node);
+    const note = this.formatAmbiguity(
+      nodes,
+      symbol,
+      `Aggregated results across ${exactMatches.length} symbols named "${symbol}".`
     );
-    const note = `\n\n> **Note:** Aggregated results across ${exactMatches.length} symbols named "${symbol}": ${locations.join(', ')}`;
-    return { nodes: exactMatches.map(r => r.node), note };
+    return { nodes, note };
+  }
+
+  private formatAmbiguity(nodes: Node[], query: string, intro?: string): string {
+    const cap = 10;
+    const shown = nodes.slice(0, cap);
+    const lines = [
+      '',
+      `> **Note:** ${nodes.length} symbols named "${query}" (ambiguous locator) matched ${nodes.length} nodes. ${intro ?? 'Use an exact handle for follow-up:'}`,
+    ];
+    for (const node of shown) {
+      lines.push(`> - ${node.name} (${node.kind}) ${formatNodeHandle(node)}`);
+    }
+    if (nodes.length > cap) {
+      lines.push(`> - ... and ${nodes.length - cap} more`);
+    }
+    return '\n' + lines.join('\n');
+  }
+
+  private formatResolutionFailure(resolution: LocatorResolution): string {
+    const label = this.locatorLabel(resolution.locator);
+    const lines: string[] = [
+      resolution.status === 'ambiguous'
+        ? `Ambiguous locator "${label}".`
+        : (resolution.message ?? `Node not found for "${label}".`),
+    ];
+
+    if (resolution.alternatives && resolution.alternatives.length > 0) {
+      lines.push('', resolution.status === 'ambiguous' ? 'Alternatives:' : 'Nearby alternatives:');
+      for (const node of resolution.alternatives.slice(0, 10)) {
+        lines.push(`- ${node.name} (${node.kind}) ${formatNodeHandle(node)}`);
+      }
+      if (resolution.alternatives.length > 10) {
+        lines.push(`- ... and ${resolution.alternatives.length - 10} more`);
+      }
+    }
+
+    return lines.join('\n');
+  }
+
+  private formatTraceResult(result: TraceResult): string {
+    const lines: string[] = ['## Trace', ''];
+
+    if (result.from) {
+      lines.push(`From: ${result.from.name} (${result.from.kind}) nodeId=${result.from.nodeId} range=${result.from.path}:${result.from.startLine}-${result.from.endLine}`);
+    }
+
+    if (result.status !== 'resolved') {
+      lines.push(`Status: ${result.status}`);
+      lines.push('', this.formatResolutionFailure(result.fromResolution));
+      if (result.recommendations.length > 0) {
+        lines.push('', '### Recommended next');
+        for (const rec of result.recommendations) lines.push(rec);
+      }
+      lines.push('', `> ${result.completenessNote}`);
+      return lines.join('\n');
+    }
+
+    if (result.targetCandidates.length > 0) {
+      lines.push(`Targets considered: ${result.targetCandidates.length}`);
+      for (const target of result.targetCandidates.slice(0, 5)) {
+        lines.push(`- ${target.name} (${target.kind}) nodeId=${target.nodeId} range=${target.path}:${target.startLine}-${target.endLine}`);
+      }
+      if (result.targetCandidates.length > 5) {
+        lines.push(`- ... and ${result.targetCandidates.length - 5} more`);
+      }
+      lines.push('');
+    }
+
+    if (result.paths.length === 0) {
+      lines.push('No complete path found.');
+    }
+
+    for (let i = 0; i < result.paths.length; i++) {
+      const path = result.paths[i]!;
+      lines.push(`### Path ${i + 1} (confidence ${path.confidence.toFixed(2)})`);
+      lines.push(path.reason);
+      lines.push('');
+
+      for (let stepIndex = 0; stepIndex < path.steps.length; stepIndex++) {
+        const step = path.steps[stepIndex]!;
+        if (stepIndex > 0) {
+          const edge = path.edges[stepIndex - 1];
+          if (edge) {
+            const callsite = edge.line ? ` at line ${edge.line}` : '';
+            lines.push(`   └─ ${edge.kind}${callsite}`);
+          }
+        }
+        lines.push(`${stepIndex + 1}. ${step.node.name} (${step.node.kind}) nodeId=${step.node.nodeId} qualifiedName=${step.node.qualifiedName} range=${step.node.path}:${step.node.startLine}-${step.node.endLine}`);
+      }
+      lines.push('');
+    }
+
+    if (result.gaps.length > 0) {
+      lines.push('### Gaps / caveats');
+      for (const gap of result.gaps) lines.push(`- ${gap}`);
+      lines.push('');
+    }
+
+    lines.push('### Recommended next');
+    const recs = result.recommendations.length > 0
+      ? result.recommendations
+      : ['Inspect path steps with codegraph_node using the returned nodeId handles.'];
+    for (const rec of recs) lines.push(`- ${rec.replace(/^[-•]\s*/, '')}`);
+
+    lines.push('', `> ${result.completenessNote}`);
+    return lines.join('\n');
   }
 
   /**
@@ -1836,10 +2204,8 @@ export class ToolHandler {
 
     for (const result of results) {
       const { node } = result;
-      const location = node.startLine ? `:${node.startLine}` : '';
-      // Compact format: one line per result with key info
       lines.push(`### ${node.name} (${node.kind})`);
-      lines.push(`${node.filePath}${location}`);
+      lines.push(formatNodeHandle(node));
       if (node.signature) lines.push(`\`${node.signature}\``);
       lines.push('');
     }
@@ -1851,9 +2217,7 @@ export class ToolHandler {
     const lines: string[] = [`## ${title} (${nodes.length} found)`, ''];
 
     for (const node of nodes) {
-      const location = node.startLine ? `:${node.startLine}` : '';
-      // Compact: just name, kind, location
-      lines.push(`- ${node.name} (${node.kind}) - ${node.filePath}${location}`);
+      lines.push(`- ${node.name} (${node.kind}) - ${formatNodeHandle(node)}`);
     }
 
     return lines.join('\n');
@@ -1878,9 +2242,9 @@ export class ToolHandler {
 
     for (const [file, nodes] of byFile) {
       lines.push(`**${file}:**`);
-      // Compact: inline list
-      const nodeList = nodes.map(n => `${n.name}:${n.startLine}`).join(', ');
-      lines.push(nodeList);
+      for (const node of nodes) {
+        lines.push(`- ${node.name} (${node.kind}) ${formatNodeHandle(node)}`);
+      }
       lines.push('');
     }
 
@@ -1902,9 +2266,8 @@ export class ToolHandler {
 
     const lines = [`**Members (${children.length}):**`, ''];
     for (const c of children) {
-      const loc = c.startLine ? `:${c.startLine}` : '';
       const sig = c.signature ? ` — \`${c.signature}\`` : '';
-      lines.push(`- ${c.name} (${c.kind})${loc}${sig}`);
+      lines.push(`- ${c.name} (${c.kind}) ${formatNodeHandle(c)}${sig}`);
     }
     return lines.join('\n');
   }
@@ -1915,6 +2278,8 @@ export class ToolHandler {
       `## ${node.name} (${node.kind})`,
       '',
       `**Location:** ${node.filePath}${location}`,
+      `Range: ${node.filePath}:${node.startLine}-${node.endLine}`,
+      `Handle: ${formatNodeHandle(node)}`,
     ];
 
     if (node.signature) {

@@ -131,6 +131,8 @@ The gains scale with codebase size: on large repos the agent answers from the in
 |---|---|
 | **Smart Context Building** | One tool call returns entry points, related symbols, and code snippets — no expensive exploration agents |
 | **Full-Text Search** | Find code by name instantly across your entire codebase, powered by FTS5 |
+| **Exact Handles** | Search/node results include reusable `nodeId`, `qualifiedName`, and `file:line` ranges for precise follow-up calls |
+| **Static Trace** | `codegraph_trace` returns candidate entry→target graph paths with edge kinds, callsite lines, gaps, and next-step handles |
 | **Impact Analysis** | Trace callers, callees, and the full impact radius of any symbol before making changes |
 | **Always Fresh** | File watcher uses native OS events (FSEvents/inotify/ReadDirectoryChangesW) with debounced auto-sync — the graph stays current as you code, zero config |
 | **19+ Languages** | TypeScript, JavaScript, Python, Go, Rust, Java, C#, PHP, Ruby, C, C++, Swift, Kotlin, Dart, Lua, Luau, Svelte, Liquid, Pascal/Delphi |
@@ -242,6 +244,7 @@ npm install -g @colbymchenry/codegraph
       "mcp__codegraph__codegraph_callees",
       "mcp__codegraph__codegraph_impact",
       "mcp__codegraph__codegraph_node",
+      "mcp__codegraph__codegraph_trace",
       "mcp__codegraph__codegraph_status",
       "mcp__codegraph__codegraph_files"
     ]
@@ -263,25 +266,19 @@ CodeGraph builds a semantic knowledge graph of codebases for faster, smarter cod
 
 ### If `.codegraph/` exists in the project
 
-**NEVER call `codegraph_explore` or `codegraph_context` directly in the main session.** These tools return large amounts of source code that fills up main session context. Instead, ALWAYS spawn an Explore agent for any exploration question (e.g., "how does X work?", "explain the Y system", "where is Z implemented?").
+Use CodeGraph directly for structural exploration: `codegraph_context` for orientation, `codegraph_trace` for lifecycle / entry-to-target paths, then one `codegraph_explore` for the source behind returned handles. Results include exact `nodeId` and `file:line` ranges; pass those handles back to follow-up tools instead of fuzzy re-searching.
 
-**When spawning Explore agents**, include this instruction in the prompt:
-
-> This project has CodeGraph initialized (.codegraph/ exists). Use `codegraph_explore` as your PRIMARY tool — it returns full source code sections from all relevant files in one call.
->
-> **Rules:**
-> 1. Follow the explore call budget in the `codegraph_explore` tool description — it scales automatically based on project size.
-> 2. Do NOT re-read files that codegraph_explore already returned source code for. The source sections are complete and authoritative.
-> 3. Only fall back to grep/glob/read for files listed under "Additional relevant files" if you need more detail, or if codegraph returned no results.
-
-**The main session may only use these lightweight tools directly** (for targeted lookups before making edits, not for exploration):
+**Useful tools:**
 
 | Tool | Use For |
 |------|---------|
-| `codegraph_search` | Find symbols by name |
-| `codegraph_callers` / `codegraph_callees` | Trace call flow |
+| `codegraph_search` | Find symbols by name and get exact handles |
+| `codegraph_context` | Get focused task/area context |
+| `codegraph_trace` | Trace likely static graph paths with edge/callsite metadata |
+| `codegraph_callers` / `codegraph_callees` | Trace local call flow |
 | `codegraph_impact` | Check what's affected before editing |
-| `codegraph_node` | Get a single symbol's details |
+| `codegraph_node` | Get a single symbol/locator's details |
+| `codegraph_explore` | Inspect several related symbols' source in one capped call |
 
 ### If `.codegraph/` does NOT exist
 
@@ -400,10 +397,25 @@ When running as an MCP server, CodeGraph exposes these tools to Claude Code:
 | `codegraph_callers` | Find what calls a function |
 | `codegraph_callees` | Find what a function calls |
 | `codegraph_impact` | Analyze what code is affected by changing a symbol |
-| `codegraph_node` | Get details about a specific symbol (optionally with source code) |
+<<<<<<< HEAD
+| `codegraph_node` | Get details about a specific symbol/locator (optionally with source code) |
 | `codegraph_explore` | Return source for several related symbols grouped by file, plus a relationship map, in one call |
+| `codegraph_trace` | Trace likely static graph paths from an entry locator to a target symbol/query/locator |
 | `codegraph_files` | Get indexed file structure (faster than filesystem scanning) |
 | `codegraph_status` | Check index health and statistics |
+
+Search and node results include copyable handles such as `nodeId=...`, `qualifiedName=...`, and `range=src/file.ts:10-20`. Pass those back to `codegraph_node`, `codegraph_callers`, `codegraph_callees`, `codegraph_impact`, or `codegraph_trace` as `nodeId`, `qualifiedName`, `path`+`line`, or `fileLine`.
+
+Example trace input:
+
+```json
+{
+  "fromFileLine": "src/cli.ts:42",
+  "to": "indexAll",
+  "scopePath": "src",
+  "maxDepth": 6
+}
+```
 
 ---
 
@@ -420,9 +432,12 @@ await cg.indexAll({
 });
 
 const results = cg.searchNodes('UserService');
+const userService = cg.resolveNodeLocator({ nodeId: results[0].node.id });
+const fromErrorLine = cg.resolveNodeLocator({ fileLine: 'src/service.ts:42' });
 const callers = cg.getCallers(results[0].node.id);
 const context = await cg.buildContext('fix login bug', { maxNodes: 20, includeCode: true, format: 'markdown' });
 const impact = cg.getImpactRadius(results[0].node.id, 2);
+const trace = cg.trace({ symbol: 'main' }, { symbol: 'UserService' }, { maxDepth: 6 });
 
 cg.watch();   // auto-sync on file changes
 cg.unwatch(); // stop watching

@@ -20,13 +20,16 @@ export const SERVER_INSTRUCTIONS = `# Codegraph — code intelligence over an in
 Codegraph is a SQLite knowledge graph of every symbol, edge, and file
 in the workspace. Reads are sub-millisecond; the index lags writes by
 about a second through the file watcher. Consult it BEFORE writing or
-editing code, not during.
+editing code, not during. Results include exact handles (nodeId,
+qualifiedName, range/path:line) you can pass to node/callers/callees/
+impact/trace follow-ups.
 
 ## Answer directly — don't delegate exploration
 
 For "how does X work", architecture, trace, or where-is-X questions,
 answer DIRECTLY using 2-3 codegraph calls: \`codegraph_context\` first,
-then ONE \`codegraph_explore\` for the source of the symbols it surfaces.
+\`codegraph_trace\` for entry→target flow when a path is needed, then ONE
+\`codegraph_explore\` for the source of the symbols it surfaces.
 Codegraph IS the pre-built search index — so delegating the lookup to a
 separate file-reading sub-task/agent, or running your own grep + read
 loop, repeats work codegraph already did and costs more for the same
@@ -42,6 +45,7 @@ of calls; a grep/read exploration is dozens.
 - **"What does this call?"** → \`codegraph_callees\`
 - **"What would changing this break?"** → \`codegraph_impact\`
 - **"Show me this symbol's source / signature / docstring."** → \`codegraph_node\`
+- **"Trace this lifecycle / path from entry to target."** → \`codegraph_trace\` (path-shaped static graph guidance with handles)
 - **"Show me several related symbols' source / survey an area."** → \`codegraph_explore\` (ONE capped call; prefer over many codegraph_node/Read)
 - **"What's in directory X?"** → \`codegraph_files\`
 - **"Is the index ready / what's its size?"** → \`codegraph_status\`
@@ -49,12 +53,14 @@ of calls; a grep/read exploration is dozens.
 ## Common chains
 
 - **Onboarding**: \`codegraph_context\` first. If still unclear, \`codegraph_explore\` for breadth, then \`codegraph_node\` on specific symbols.
+- **Architecture/lifecycle flow**: \`codegraph_context\` to find entry points → \`codegraph_trace\` with nodeId/file:line handles → \`codegraph_explore\` or Read on returned ranges.
 - **Refactor planning**: \`codegraph_search\` → \`codegraph_callers\` → \`codegraph_impact\`. The blast-radius answer comes from impact, not from walking callers manually.
 - **Debugging a regression**: \`codegraph_callers\` of the suspected symbol; widen with \`codegraph_impact\` if an unexpected call appears.
 
 ## Anti-patterns
 
-- **Don't grep first** when looking up a symbol by name — \`codegraph_search\` is faster and returns kind + location + signature.
+- **Don't grep first** when looking up a symbol by name — \`codegraph_search\` is faster and returns kind + location + signature + exact handles.
+- **Don't re-resolve by fuzzy symbol once you have a handle** — pass nodeId, fileLine, or path+line directly.
 - **Don't chain \`codegraph_search\` + \`codegraph_node\`** when you just want context — \`codegraph_context\` is one round-trip.
 - **Don't loop \`codegraph_node\` over many symbols** — one \`codegraph_explore\` call returns them all grouped by file, while each separate call re-reads the whole context and costs far more. Use \`codegraph_node\` for a single symbol.
 - **Don't query the index immediately after editing a file** — the watcher needs ~500ms to debounce + sync. Wait for the next turn.
