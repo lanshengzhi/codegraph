@@ -19,13 +19,14 @@ import {
   BuildContextOptions,
   FindRelevantContextOptions,
   SearchResult,
+  RelevanceReason,
 } from '../types';
 import { QueryBuilder } from '../db/queries';
 import { GraphTraverser } from '../graph';
 import { formatContextAsMarkdown, formatContextAsJson } from './formatter';
 import { logDebug } from '../errors';
 import { validatePathWithinRoot } from '../utils';
-import { isTestFile, extractSearchTerms, scorePathRelevance, getStemVariants } from '../search/query-utils';
+import { isTestFile, isGeneratedFile, extractSearchTerms, scorePathRelevance, getStemVariants } from '../search/query-utils';
 
 /**
  * Extract likely symbol names from a natural language query
@@ -172,6 +173,224 @@ const DEFAULT_FIND_OPTIONS: Required<FindRelevantContextOptions> = {
   nodeKinds: HIGH_VALUE_NODE_KINDS, // Filter out imports/exports by default
 };
 
+const GENERIC_SYMBOL_NAMES = new Set([
+  'run', 'main', 'init', 'start', 'stop', 'setup', 'teardown', 'handler', 'handle',
+  'helper', 'util', 'utils', 'text', 'data', 'value', 'item', 'node', 'entry',
+  'process', 'execute', 'call', 'get', 'set', 'list', 'test', 'spec',
+]);
+
+function uniqueStrings(values: Array<string | undefined>): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const value of values) {
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    out.push(value);
+  }
+  return out;
+}
+
+function relevanceLabel(signals: string[], penalties: string[], score?: number): RelevanceReason['label'] {
+  if (signals.length === 0 && penalties.length === 0) return 'not-recorded';
+
+  const strongSignals = new Set([
+    'exact name match',
+    'exact symbol extracted from query',
+    'entry point',
+    'directly connected to entry point',
+    'compound multi-term match',
+    'file contains multiple query symbols',
+  ]);
+  const hasStrongSignal = signals.some((signal) => strongSignals.has(signal));
+  const hasOnlyWeakSignals = signals.length > 0 && !hasStrongSignal;
+  const hasWeakPenalty = penalties.includes('lexical-only match') || penalties.includes('low graph proximity');
+
+  if (!hasStrongSignal && (penalties.length > 0 || hasOnlyWeakSignals)) return 'low-signal';
+  if (hasStrongSignal && penalties.length === 0 && (score === undefined || score >= 1)) return 'high-signal';
+  if (hasStrongSignal && penalties.length <= 1 && !hasWeakPenalty) return 'medium-signal';
+  return penalties.length > 0 ? 'medium-signal' : 'medium-signal';
+}
+
+function mergeRelevanceReason(
+  existing: RelevanceReason | undefined,
+  patch: { signals?: string[]; penalties?: string[]; score?: number; scoreMode?: 'max' | 'override' } = {}
+): RelevanceReason {
+  const signals = uniqueStrings([...(existing?.signals ?? []), ...(patch.signals ?? [])]);
+  const penalties = uniqueStrings([...(existing?.penalties ?? []), ...(patch.penalties ?? [])]);
+  const score = patch.scoreMode === 'override'
+    ? patch.score
+    : Math.max(existing?.score ?? Number.NEGATIVE_INFINITY, patch.score ?? Number.NEGATIVE_INFINITY);
+  const normalizedScore = typeof score === 'number' && Number.isFinite(score) ? score : undefined;
+  return {
+    label: relevanceLabel(signals, penalties, normalizedScore),
+    ...(normalizedScore !== undefined ? { score: normalizedScore } : {}),
+    signals,
+    penalties,
+  };
+}
+
+function withReason(
+  result: SearchResult,
+  patch: { signals?: string[]; penalties?: string[]; score?: number }
+): SearchResult {
+  return {
+    ...result,
+    reason: mergeRelevanceReason(result.reason, { ...patch, score: patch.score ?? result.score }),
+  };
+}
+
+function addReasonSignal(result: SearchResult, signal: string): void {
+  result.reason = mergeRelevanceReason(result.reason, { signals: [signal], score: result.score });
+}
+
+function addReasonPenalty(result: SearchResult, penalty: string): void {
+  result.reason = mergeRelevanceReason(result.reason, { penalties: [penalty], score: result.score });
+}
+
+function setReasonScore(result: SearchResult): void {
+  if (!result.reason) return;
+  result.reason = mergeRelevanceReason(result.reason, {
+    score: result.score,
+    scoreMode: 'override',
+  });
+}
+
+function mergeSearchResultReason(existing: SearchResult, incoming: SearchResult): void {
+  existing.score = Math.max(existing.score, incoming.score);
+  existing.reason = mergeRelevanceReason(existing.reason, {
+    signals: incoming.reason?.signals,
+    penalties: incoming.reason?.penalties,
+    score: Math.max(existing.reason?.score ?? existing.score, incoming.reason?.score ?? incoming.score),
+  });
+}
+
+function hasQueryNameOrPathMatch(node: Node, queryTerms: string[]): boolean {
+  if (queryTerms.length === 0) return false;
+  const nameLower = node.name.toLowerCase();
+  const pathLower = node.filePath.toLowerCase();
+  return queryTerms.some((term) => nameLower.includes(term) || pathLower.includes(term));
+}
+
+function annotateCommonRelevance(
+  result: SearchResult,
+  queryTerms: string[],
+  symbolsFromQuery: string[],
+  isTestQuery: boolean
+): void {
+  const node = result.node;
+  const symbolSet = new Set(symbolsFromQuery.map((symbol) => symbol.toLowerCase()));
+  const nodeNameLower = node.name.toLowerCase();
+  const signals: string[] = [];
+  const penalties: string[] = [];
+
+  if (symbolSet.has(nodeNameLower)) {
+    signals.push('exact name match');
+  }
+  if (hasQueryNameOrPathMatch(node, queryTerms)) {
+    signals.push('path/name text match');
+  }
+  if (GENERIC_SYMBOL_NAMES.has(nodeNameLower)) {
+    penalties.push('generic symbol name');
+  }
+  if (!isTestQuery && isTestFile(node.filePath)) {
+    penalties.push('test/fixture/example path');
+  }
+  if (isGeneratedFile(node.filePath)) {
+    penalties.push('generated path');
+  }
+
+  const existingSignals = result.reason?.signals ?? [];
+  const hasStructuredSignal = existingSignals.some((signal) => signal !== 'path/name text match');
+  if (!hasStructuredSignal && !hasQueryNameOrPathMatch(node, queryTerms)) {
+    penalties.push('lexical-only match');
+  }
+
+  result.reason = mergeRelevanceReason(result.reason, { signals, penalties, score: result.score });
+}
+
+function isDirectlyConnectedToAnyRoot(nodeId: string, rootIds: Set<string>, edges: Edge[]): boolean {
+  return edges.some((edge) =>
+    (edge.source === nodeId && rootIds.has(edge.target)) ||
+    (edge.target === nodeId && rootIds.has(edge.source))
+  );
+}
+
+function buildFileRelevanceReasons(
+  nodes: Map<string, Node>,
+  roots: string[],
+  nodeReasons: Record<string, RelevanceReason>,
+  query: string,
+  isTestQuery: boolean
+): Record<string, RelevanceReason> {
+  const byFile = new Map<string, Node[]>();
+  const rootSet = new Set(roots);
+  const queryTerms = extractSearchTerms(query, { stems: false });
+
+  for (const node of nodes.values()) {
+    const list = byFile.get(node.filePath) ?? [];
+    list.push(node);
+    byFile.set(node.filePath, list);
+  }
+
+  const fileReasons: Record<string, RelevanceReason> = {};
+  for (const [filePath, fileNodes] of byFile) {
+    let reason: RelevanceReason | undefined;
+    const signals: string[] = [];
+    const penalties: string[] = [];
+    const scores: number[] = [];
+
+    if (fileNodes.some((node) => rootSet.has(node.id))) signals.push('entry point');
+    if (fileNodes.some((node) => nodeReasons[node.id]?.signals.includes('directly connected to entry point'))) {
+      signals.push('directly connected to entry point');
+    }
+    if (fileNodes.some((node) => nodeReasons[node.id]?.signals.includes('graph proximity to entry point'))) {
+      signals.push('graph proximity to entry point');
+    }
+    if (fileNodes.some((node) => nodeReasons[node.id]?.signals.includes('exact name match'))) {
+      signals.push('exact name match');
+    }
+    if (fileNodes.some((node) => nodeReasons[node.id]?.signals.includes('exact symbol extracted from query'))) {
+      signals.push('exact symbol extracted from query');
+    }
+    if (fileNodes.some((node) => nodeReasons[node.id]?.signals.includes('prefix/camel-case match'))) {
+      signals.push('prefix/camel-case match');
+    }
+    if (fileNodes.some((node) => nodeReasons[node.id]?.signals.includes('compound multi-term match'))) {
+      signals.push('compound multi-term match');
+    }
+
+    const matchedTerms = new Set<string>();
+    const fileLower = filePath.toLowerCase();
+    for (const term of queryTerms) {
+      if (fileLower.includes(term) || fileNodes.some((node) => node.name.toLowerCase().includes(term))) {
+        matchedTerms.add(term);
+      }
+    }
+    if (matchedTerms.size > 0) signals.push('path/name text match');
+    if (matchedTerms.size >= 2 || fileNodes.filter((node) => rootSet.has(node.id)).length >= 2) {
+      signals.push('file contains multiple query symbols');
+    }
+
+    for (const node of fileNodes) {
+      const nodeReason = nodeReasons[node.id];
+      if (nodeReason?.score !== undefined) scores.push(nodeReason.score);
+      for (const penalty of nodeReason?.penalties ?? []) penalties.push(penalty);
+    }
+    if (!isTestQuery && isTestFile(filePath)) penalties.push('test/fixture/example path');
+    if (isGeneratedFile(filePath)) penalties.push('generated path');
+    if (signals.length === 0) penalties.push('low graph proximity');
+
+    reason = mergeRelevanceReason(reason, {
+      signals,
+      penalties,
+      score: scores.length > 0 ? Math.max(...scores) : undefined,
+    });
+    fileReasons[filePath] = reason;
+  }
+
+  return fileReasons;
+}
+
 /**
  * Context Builder
  *
@@ -291,10 +510,14 @@ export class ContextBuilder {
     const nodes = new Map<string, Node>();
     const edges: Edge[] = [];
     const roots: string[] = [];
+    const nodeReasons: Record<string, RelevanceReason> = {};
+    const mergeNodeReason = (nodeId: string, patch: { signals?: string[]; penalties?: string[]; score?: number }) => {
+      nodeReasons[nodeId] = mergeRelevanceReason(nodeReasons[nodeId], patch);
+    };
 
     // Handle empty query - return empty subgraph
     if (!query || query.trim().length === 0) {
-      return { nodes, edges, roots };
+      return { nodes, edges, roots, reasons: { nodes: {}, files: {} } };
     }
 
     // === HYBRID SEARCH ===
@@ -311,7 +534,9 @@ export class ContextBuilder {
         exactMatches = this.queries.findNodesByExactName(symbolsFromQuery, {
           limit: Math.ceil(opts.searchLimit * 5),
           kinds: opts.nodeKinds && opts.nodeKinds.length > 0 ? opts.nodeKinds : undefined,
-        });
+        }).map((result) => withReason(result, {
+          signals: ['exact symbol extracted from query', 'exact name match'],
+        }));
 
         // Co-location boost: when multiple extracted symbols appear in the same file,
         // those results are much more likely to be what the user is looking for.
@@ -327,10 +552,13 @@ export class ContextBuilder {
           // Boost results in files where multiple query symbols co-occur
           exactMatches = exactMatches.map(r => {
             const symbolCount = fileSymbolCounts.get(r.node.filePath)?.size || 1;
-            return {
+            const scored = {
               ...r,
               score: symbolCount > 1 ? r.score + (symbolCount - 1) * 20 : r.score,
             };
+            return symbolCount > 1
+              ? withReason(scored, { signals: ['file contains multiple query symbols'], score: scored.score })
+              : withReason(scored, { score: scored.score });
           });
           exactMatches.sort((a, b) => b.score - a.score);
         }
@@ -373,13 +601,16 @@ export class ContextBuilder {
             // "AllocationBalancingRoundMetrics" (31 chars). Core classes tend
             // to have concise names; test/helper classes are verbose.
             const brevityBonus = Math.max(0, 10 - (r.node.name.length - titleCased.length) / 3);
-            matched.push({ ...r, score: r.score + 15 + brevityBonus });
+            const scored = { ...r, score: r.score + 15 + brevityBonus };
+            matched.push(withReason(scored, { signals: ['prefix/camel-case match'], score: scored.score }));
           }
         }
         matched.sort((a, b) => b.score - a.score);
         for (const r of matched.slice(0, Math.ceil(opts.searchLimit))) {
           const existing = exactMatches.find(e => e.node.id === r.node.id);
-          if (!existing) {
+          if (existing) {
+            mergeSearchResultReason(existing, r);
+          } else {
             exactMatches.push(r);
           }
         }
@@ -419,16 +650,22 @@ export class ContextBuilder {
               existing.termHits++;
               existing.result.score = Math.max(existing.result.score, r.score);
             } else {
-              termResultsMap.set(r.node.id, { result: r, termHits: 1 });
+              termResultsMap.set(r.node.id, { result: withReason(r, { score: r.score }), termHits: 1 });
             }
           }
         }
         // Boost results matching multiple terms and sort
         textResults = Array.from(termResultsMap.values())
-          .map(({ result, termHits }) => ({
-            ...result,
-            score: result.score + (termHits - 1) * 5,
-          }))
+          .map(({ result, termHits }) => {
+            const scored = {
+              ...result,
+              score: result.score + (termHits - 1) * 5,
+            };
+            return withReason(scored, {
+              signals: termHits > 1 ? ['compound multi-term match'] : undefined,
+              score: scored.score,
+            });
+          })
           .sort((a, b) => b.score - a.score)
           .slice(0, opts.searchLimit * 2);
       }
@@ -447,7 +684,7 @@ export class ContextBuilder {
     for (const result of exactMatches) {
       const existing = resultById.get(result.node.id);
       if (existing) {
-        existing.score = Math.max(existing.score, result.score);
+        mergeSearchResultReason(existing, result);
       } else {
         resultById.set(result.node.id, result);
         searchResults.push(result);
@@ -458,7 +695,7 @@ export class ContextBuilder {
     for (const result of textResults) {
       const existing = resultById.get(result.node.id);
       if (existing) {
-        existing.score = Math.max(existing.score, result.score);
+        mergeSearchResultReason(existing, result);
       } else {
         resultById.set(result.node.id, result);
         searchResults.push(result);
@@ -531,12 +768,15 @@ export class ContextBuilder {
         if (matchCount >= 2) {
           // Multiplicative boost — 2 terms → 2x, 3 terms → 2.5x
           result.score *= 1 + matchCount * 0.5;
+          addReasonSignal(result, 'compound multi-term match');
         } else if (!exactMatchIds.has(result.node.id)) {
           // Mild dampen for single-term matches — they might be generic
           // but could also be the right result (e.g., "Protocol" class for an IPC query).
           // Exempt exact name matches: they are specific symbols the user queried for.
           result.score *= 0.6;
+          addReasonPenalty(result, 'lexical-only match');
         }
+        result.reason = mergeRelevanceReason(result.reason, { score: result.score });
       }
       searchResults.sort((a, b) => b.score - a.score);
     }
@@ -585,7 +825,8 @@ export class ContextBuilder {
 
           const pathScore = scorePathRelevance(r.node.filePath, query);
           const brevityBonus = Math.max(0, 6 - (name.length - titleCased.length) / 4);
-          termCandidates.push({ node: r.node, score: 8 + brevityBonus + pathScore });
+          const scored = { node: r.node, score: 8 + brevityBonus + pathScore };
+          termCandidates.push(withReason(scored, { signals: ['prefix/camel-case match'], score: scored.score }));
         }
         termCandidates.sort((a, b) => b.score - a.score);
 
@@ -617,7 +858,9 @@ export class ContextBuilder {
         // 3+ query terms in its name (e.g., ExtensionHostProcess) is almost
         // certainly what the user wants. Scale aggressively.
         info.result.score = info.result.score * (1 + info.termCount) + (info.termCount - 1) * 30;
-        camelResults.push(info.result);
+        const signals = ['prefix/camel-case match'];
+        if (info.termCount > 1) signals.push('compound multi-term match');
+        camelResults.push(withReason(info.result, { signals, score: info.result.score }));
       }
       camelResults.sort((a, b) => b.score - a.score);
       const maxCamelTotal = opts.searchLimit;
@@ -664,10 +907,14 @@ export class ContextBuilder {
           if (entry.terms.size >= 2) {
             const pathScore = scorePathRelevance(entry.node.filePath, query);
             const brevityBonus = Math.max(0, 6 - entry.node.name.length / 8);
-            compoundResults.push({
+            const scored = {
               node: entry.node,
               score: 10 + (entry.terms.size - 1) * 20 + pathScore + brevityBonus,
-            });
+            };
+            compoundResults.push(withReason(scored, {
+              signals: ['compound multi-term match'],
+              score: scored.score,
+            }));
           }
         }
         compoundResults.sort((a, b) => b.score - a.score);
@@ -684,6 +931,12 @@ export class ContextBuilder {
     // later steps can outrank dampened single-term matches from earlier steps.
     searchResults.sort((a, b) => b.score - a.score);
     searchResults = searchResults.slice(0, opts.searchLimit * 3);
+
+    const queryTermsForReason = extractSearchTerms(query, { stems: false });
+    for (const result of searchResults) {
+      annotateCommonRelevance(result, queryTermsForReason, symbolsFromQuery, isTestQuery);
+      setReasonScore(result);
+    }
 
     // Filter by minimum score
     let filteredResults = searchResults.filter((r) => r.score >= opts.minScore);
@@ -704,6 +957,11 @@ export class ContextBuilder {
     for (const result of filteredResults) {
       nodes.set(result.node.id, result.node);
       roots.push(result.node.id);
+      mergeNodeReason(result.node.id, {
+        signals: [...(result.reason?.signals ?? []), 'entry point'],
+        penalties: result.reason?.penalties,
+        score: result.score,
+      });
     }
 
     // Expand type hierarchy for class/interface entry points.
@@ -722,6 +980,13 @@ export class ContextBuilder {
           if (!nodes.has(id)) {
             nodes.set(id, node);
             hierarchyNodesAdded++;
+          }
+          if (id !== result.node.id) {
+            mergeNodeReason(id, {
+              signals: [isDirectlyConnectedToAnyRoot(id, new Set([result.node.id]), hierarchy.edges)
+                ? 'directly connected to entry point'
+                : 'graph proximity to entry point'],
+            });
           }
         }
         for (const edge of hierarchy.edges) {
@@ -749,6 +1014,9 @@ export class ContextBuilder {
             nodes.set(id, node);
             hierarchyNodesAdded++;
           }
+          if (!roots.includes(id)) {
+            mergeNodeReason(id, { signals: ['graph proximity to entry point'] });
+          }
         }
         for (const edge of siblingHierarchy.edges) {
           if (nodes.has(edge.source) && nodes.has(edge.target)) {
@@ -773,10 +1041,19 @@ export class ContextBuilder {
         limit: Math.ceil(opts.maxNodes / Math.max(1, filteredResults.length)),
       });
 
+      const traversalRootIds = new Set([result.node.id]);
+
       // Merge nodes
       for (const [id, node] of traversalResult.nodes) {
         if (!nodes.has(id)) {
           nodes.set(id, node);
+        }
+        if (id !== result.node.id) {
+          mergeNodeReason(id, {
+            signals: [isDirectlyConnectedToAnyRoot(id, traversalRootIds, traversalResult.edges)
+              ? 'directly connected to entry point'
+              : 'graph proximity to entry point'],
+          });
         }
       }
 
@@ -907,7 +1184,21 @@ export class ContextBuilder {
       }
     }
 
-    return { nodes: finalNodes, edges: finalEdges, roots };
+    const finalRoots = roots.filter((id) => finalNodes.has(id));
+    const finalNodeReasons: Record<string, RelevanceReason> = {};
+    for (const id of finalNodes.keys()) {
+      if (nodeReasons[id]) {
+        finalNodeReasons[id] = nodeReasons[id]!;
+      }
+    }
+    const fileReasons = buildFileRelevanceReasons(finalNodes, finalRoots, finalNodeReasons, query, isTestQuery);
+
+    return {
+      nodes: finalNodes,
+      edges: finalEdges,
+      roots: finalRoots,
+      reasons: { nodes: finalNodeReasons, files: fileReasons },
+    };
   }
 
   /**
@@ -1093,19 +1384,40 @@ export class ContextBuilder {
       let foundDefinition = false;
       for (const edge of outgoingEdges) {
         const targetNode = this.queries.getNodeById(edge.target);
-        if (targetNode && !seenIds.has(targetNode.id)) {
-          // Found the definition - use it instead of the import
-          seenIds.add(targetNode.id);
-          resolved.push({
-            node: targetNode,
-            score: score, // Preserve the original score
+        if (targetNode) {
+          const resolutionSignal = node.kind === 'import'
+            ? 'resolved from import match'
+            : 'resolved from export match';
+          const resolvedReason = mergeRelevanceReason(result.reason, {
+            signals: [resolutionSignal],
+            score,
           });
-          foundDefinition = true;
-          logDebug('Resolved import to definition', {
-            import: node.name,
-            definition: targetNode.name,
-            kind: targetNode.kind,
-          });
+          const existing = resolved.find((r) => r.node.id === targetNode.id);
+          if (existing) {
+            existing.score = Math.max(existing.score, score);
+            existing.reason = mergeRelevanceReason(existing.reason, {
+              signals: resolvedReason.signals,
+              penalties: resolvedReason.penalties,
+              score: existing.score,
+            });
+            foundDefinition = true;
+            continue;
+          }
+          if (!seenIds.has(targetNode.id)) {
+            // Found the definition - use it instead of the import
+            seenIds.add(targetNode.id);
+            resolved.push({
+              node: targetNode,
+              score: score, // Preserve the original score
+              reason: resolvedReason,
+            });
+            foundDefinition = true;
+            logDebug('Resolved import to definition', {
+              import: node.name,
+              definition: targetNode.name,
+              kind: targetNode.kind,
+            });
+          }
         }
       }
 

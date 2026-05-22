@@ -9,6 +9,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import CodeGraph from '../src/index';
+import type { Edge, Node } from '../src/types';
 
 describe('Context Builder', () => {
   let testDir: string;
@@ -303,6 +304,132 @@ export function validateEmail(email: string): boolean {
       expect(markdown).not.toMatch(/\*Context:.*symbols.*relationships.*files/);
       // But should still have query
       expect(markdown).toContain('**Query:**');
+    });
+
+    it('should include static relevance reasons for entry points in markdown', async () => {
+      const result = await cg.buildContext('PaymentService', {
+        format: 'markdown',
+        includeCode: false,
+      });
+
+      const markdown = result as string;
+
+      expect(markdown).toContain('Reason:');
+      expect(markdown).toMatch(/exact name match|exact symbol extracted from query/);
+    });
+
+    it('should include structured relevance reasons in JSON output', async () => {
+      const result = await cg.buildContext('PaymentService', {
+        format: 'json',
+        includeCode: false,
+      });
+
+      const parsed = JSON.parse(result as string);
+      expect(parsed.reasons).toBeDefined();
+      expect(parsed.reasons.nodes).toBeDefined();
+      expect(parsed.entryPoints[0].reason).toBeDefined();
+      expect(parsed.entryPoints[0].reason.signals.length).toBeGreaterThan(0);
+    });
+
+    it('should propagate import/export match reasons to resolved definitions', async () => {
+      const now = Date.now();
+      const makeNode = (id: string, kind: Node['kind'], name: string): Node => ({
+        id,
+        kind,
+        name,
+        qualifiedName: name,
+        filePath: `src/${name}.ts`,
+        language: 'typescript',
+        startLine: 1,
+        endLine: 1,
+        startColumn: 0,
+        endColumn: 1,
+        isExported: false,
+        isAsync: false,
+        isStatic: false,
+        isAbstract: false,
+        updatedAt: now,
+      });
+      const queries = (cg as unknown as { queries: { insertNode(node: Node): void; insertEdge(edge: Edge): void } }).queries;
+
+      const targetFromImport = makeNode('function:synthetic-import-target', 'function', 'SyntheticImportDefinition');
+      const importNode = makeNode('import:synthetic-import-alias', 'import', 'SyntheticImportAlias');
+      const targetFromExport = makeNode('function:synthetic-export-target', 'function', 'SyntheticExportDefinition');
+      const exportNode = makeNode('export:synthetic-export-alias', 'export', 'SyntheticExportAlias');
+      for (const node of [targetFromImport, importNode, targetFromExport, exportNode]) {
+        queries.insertNode(node);
+      }
+      queries.insertEdge({ source: importNode.id, target: targetFromImport.id, kind: 'imports', line: 1, column: 0 });
+      queries.insertEdge({ source: exportNode.id, target: targetFromExport.id, kind: 'exports', line: 1, column: 0 });
+
+      const importResult = await cg.findRelevantContext('SyntheticImportAlias', {
+        searchLimit: 3,
+        traversalDepth: 0,
+        maxNodes: 5,
+        minScore: 0,
+        nodeKinds: ['import'],
+      });
+      const importEntry = importResult.roots
+        .map((id) => importResult.nodes.get(id))
+        .find((node) => node?.name === 'SyntheticImportDefinition');
+      expect(importEntry).toBeDefined();
+      expect(importResult.reasons?.nodes[importEntry!.id]?.signals).toContain('resolved from import match');
+
+      const exportResult = await cg.findRelevantContext('SyntheticExportAlias', {
+        searchLimit: 3,
+        traversalDepth: 0,
+        maxNodes: 5,
+        minScore: 0,
+        nodeKinds: ['export'],
+      });
+      const exportEntry = exportResult.roots
+        .map((id) => exportResult.nodes.get(id))
+        .find((node) => node?.name === 'SyntheticExportDefinition');
+      expect(exportEntry).toBeDefined();
+      expect(exportResult.reasons?.nodes[exportEntry!.id]?.signals).toContain('resolved from export match');
+    });
+
+    it('should record test/fixture path penalties when non-test queries surface test files', async () => {
+      const testSrcDir = path.join(testDir, 'src', '__tests__');
+      fs.mkdirSync(testSrcDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(testSrcDir, 'payment-helper.test.ts'),
+        `export function paymentHelper(): string { return 'helper'; }\n`
+      );
+      await cg.sync();
+
+      const result = await cg.buildContext('paymentHelper', {
+        format: 'json',
+        includeCode: false,
+        maxNodes: 10,
+      });
+
+      const parsed = JSON.parse(result as string);
+      const testNode = parsed.nodes.find((node: { filePath: string }) => node.filePath.includes('__tests__'));
+      expect(testNode).toBeDefined();
+      expect(testNode.reason.penalties).toContain('test/fixture/example path');
+    });
+
+    it('should record generated path penalties for generated files', async () => {
+      const generatedDir = path.join(testDir, 'src', 'generated');
+      fs.mkdirSync(generatedDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(generatedDir, 'payment.generated.ts'),
+        `export function generatedPaymentFlow(): string { return 'generated'; }\n`
+      );
+      await cg.sync();
+
+      const result = await cg.buildContext('generatedPaymentFlow', {
+        format: 'json',
+        includeCode: false,
+        maxNodes: 10,
+      });
+
+      const parsed = JSON.parse(result as string);
+      const generatedNode = parsed.nodes.find((node: { filePath: string }) => node.filePath.includes('/generated/'));
+      expect(generatedNode).toBeDefined();
+      expect(generatedNode.reason.penalties).toContain('generated path');
+      expect(parsed.reasons.files[generatedNode.filePath].penalties).toContain('generated path');
     });
   });
 

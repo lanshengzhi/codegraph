@@ -550,6 +550,26 @@ export interface UnresolvedReference {
 /**
  * A subgraph containing a subset of the knowledge graph
  */
+export type RelevanceLabel = 'high-signal' | 'medium-signal' | 'low-signal' | 'not-recorded';
+
+/**
+ * Auditable static relevance explanation for context/explore ranking.
+ * Signals and penalties must come from recorded search/graph/path facts.
+ */
+export interface RelevanceReason {
+  label: RelevanceLabel;
+  score?: number;
+  signals: string[];
+  penalties: string[];
+}
+
+export interface SubgraphRelevanceReasons {
+  /** Relevance reasons keyed by node ID. */
+  nodes: Record<string, RelevanceReason>;
+  /** Relevance reasons keyed by project-relative file path. */
+  files: Record<string, RelevanceReason>;
+}
+
 export interface Subgraph {
   /** Nodes in this subgraph */
   nodes: Map<string, Node>;
@@ -559,6 +579,9 @@ export interface Subgraph {
 
   /** Root node IDs (entry points) */
   roots: string[];
+
+  /** Optional static relevance reasons for nodes/files in this subgraph. */
+  reasons?: SubgraphRelevanceReasons;
 }
 
 /**
@@ -622,6 +645,9 @@ export interface SearchResult {
 
   /** Matched text snippets for highlighting */
   highlights?: string[];
+
+  /** Optional static reason explaining why this result was ranked. */
+  reason?: RelevanceReason;
 }
 
 // =============================================================================

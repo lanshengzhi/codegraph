@@ -40,13 +40,13 @@ of calls; a grep/read exploration is dozens.
 ## Tool selection by intent
 
 - **"What is the symbol named X?"** → \`codegraph_search\`
-- **"What's the deal with this task / feature / area?"** → \`codegraph_context\` (PRIMARY — composes search + node + callers + callees in one call)
+- **"What's the deal with this task / feature / area?"** → \`codegraph_context\` (PRIMARY — composes search + node + callers + callees in one call; entry points may include static relevance reasons)
 - **"What calls this?"** → \`codegraph_callers\` (includes edge evidence/callsite when recorded, e.g. \`direct-call\`, \`property-call\`, \`constructor-call\`, \`import\`, \`decorator\`, \`bare-call\`, or resolver fallback)
 - **"What does this call?"** → \`codegraph_callees\` (includes edge evidence/callsite when recorded, e.g. \`direct-call\`, \`property-call\`, \`constructor-call\`, \`import\`, \`decorator\`, \`bare-call\`, or resolver fallback)
 - **"What would changing this break?"** → \`codegraph_impact\`
 - **"Show me this symbol's source / signature / docstring."** → \`codegraph_node\`
 - **"Trace this lifecycle / path from entry to target."** → \`codegraph_trace\` (path-shaped static graph guidance with handles, edge evidence, static ranking score/reason, and boundary/low-evidence caveats; not runtime proof)
-- **"Show me several related symbols' source / survey an area."** → \`codegraph_explore\` (ONE capped call; prefer over many codegraph_node/Read)
+- **"Show me several related symbols' source / survey an area."** → \`codegraph_explore\` (ONE capped call; prefer over many codegraph_node/Read; file headers may include static relevance reasons)
 - **"What's in directory X?"** → \`codegraph_files\`
 - **"Is the index ready / what's its size?"** → \`codegraph_status\`
 
@@ -70,5 +70,6 @@ of calls; a grep/read exploration is dozens.
 - Index lags file writes by ~1 second.
 - Cross-file resolution is best-effort name matching; ambiguous calls may return multiple candidates.
 - Trace/callers/callees edge evidence reflects indexed static edges. When recorded, \`evidence=\` may show source syntax such as \`direct-call\`, \`property-call\`, \`constructor-call\`, \`import\`, \`decorator\`, or \`bare-call\`; otherwise resolver fallback may show \`name-match\`, \`framework\`, or \`fuzzy\`. \`not-recorded\` means the index did not capture that fact, not that runtime behavior is absent. Trace ranks candidate paths with a static score/reason from recorded evidence (direct-call ratio, edge confidence, scope, low-evidence, optional/test/generated penalties); this is sorting guidance, not runtime main-path proof. Trace may show boundary / low-evidence entries with exact handles for source inspection.
+- Context/explore relevance reasons are static ranking explanations from recorded search/graph signals (exact name/path matches, query-symbol extraction, entry-point proximity, generic-name or test/generated penalties). They explain why candidates were returned, not complete semantic proof.
 - No live correctness validation — that's still the TypeScript compiler / test suite / linter's job. Codegraph supplements those with structural context they don't have.
 `;

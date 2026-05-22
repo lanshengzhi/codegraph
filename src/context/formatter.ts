@@ -4,7 +4,7 @@
  * Formats TaskContext as markdown or JSON for consumption by Claude.
  */
 
-import { Node, Edge, TaskContext, Subgraph } from '../types';
+import { Node, Edge, TaskContext, Subgraph, RelevanceReason } from '../types';
 
 /**
  * Format context as markdown
@@ -30,6 +30,7 @@ export function formatContextAsMarkdown(context: TaskContext): string {
       if (node.signature) {
         lines.push(`  \`${node.signature}\``);
       }
+      lines.push(`  Reason: ${formatRelevanceReason(context.subgraph.reasons?.nodes[node.id])}`);
     }
     lines.push('');
   }
@@ -80,8 +81,8 @@ export function formatContextAsJson(context: TaskContext): string {
   const serializable = {
     query: context.query,
     summary: context.summary,
-    entryPoints: context.entryPoints.map(serializeNode),
-    nodes: Array.from(context.subgraph.nodes.values()).map(serializeNode),
+    entryPoints: context.entryPoints.map((node) => serializeNode(node, context.subgraph.reasons?.nodes[node.id])),
+    nodes: Array.from(context.subgraph.nodes.values()).map((node) => serializeNode(node, context.subgraph.reasons?.nodes[node.id])),
     edges: context.subgraph.edges.map(serializeEdge),
     codeBlocks: context.codeBlocks.map((block) => ({
       filePath: block.filePath,
@@ -93,10 +94,32 @@ export function formatContextAsJson(context: TaskContext): string {
       nodeKind: block.node?.kind,
     })),
     relatedFiles: context.relatedFiles,
+    reasons: context.subgraph.reasons ?? { nodes: {}, files: {} },
     stats: context.stats,
   };
 
   return JSON.stringify(serializable, null, 2);
+}
+
+/**
+ * Format a compact, auditable relevance reason for markdown output.
+ */
+export function formatRelevanceReason(reason?: RelevanceReason, maxLength = 160): string {
+  if (!reason || (reason.label === 'not-recorded' && reason.signals.length === 0 && reason.penalties.length === 0)) {
+    return 'not recorded';
+  }
+
+  const parts = [
+    reason.label,
+    ...reason.signals,
+    ...reason.penalties,
+  ];
+  const text = parts.filter(Boolean).join('; ');
+  return truncate(text, maxLength);
+}
+
+function notRecordedReason(): RelevanceReason {
+  return { label: 'not-recorded', signals: [], penalties: [] };
 }
 
 /**
@@ -215,7 +238,7 @@ function formatNodeTree(
 /**
  * Serialize a node for JSON output
  */
-function serializeNode(node: Node): Record<string, unknown> {
+function serializeNode(node: Node, reason?: RelevanceReason): Record<string, unknown> {
   return {
     id: node.id,
     kind: node.kind,
@@ -231,6 +254,7 @@ function serializeNode(node: Node): Record<string, unknown> {
     isExported: node.isExported,
     isAsync: node.isAsync,
     isStatic: node.isStatic,
+    reason: reason ?? notRecordedReason(),
   };
 }
 

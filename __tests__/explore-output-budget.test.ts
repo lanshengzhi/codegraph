@@ -219,6 +219,13 @@ describe('codegraph_explore output respects the adaptive budget', () => {
     expect(text).not.toContain('// ... trimmed');
   });
 
+  it('includes compact file relevance reasons in source headers', async () => {
+    const result = await handler.execute('codegraph_explore', { query: 'Session method helper' });
+    const text = result.content?.[0]?.text ?? '';
+    expect(text).toContain('Reason:');
+    expect(text).toMatch(/entry point|directly connected to entry point|graph proximity to entry point/);
+  });
+
   it('does not collapse a whole-file class into just its header (envelope filter)', async () => {
     // The synthetic `Session` class spans the entire file. Without the
     // envelope filter it would form one giant cluster that tail-trims to

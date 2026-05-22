@@ -16,6 +16,8 @@ describe('CodeGraph instructions', () => {
     expect(SERVER_INSTRUCTIONS).toContain('boundary');
     expect(SERVER_INSTRUCTIONS).toContain('static score');
     expect(SERVER_INSTRUCTIONS).toContain('not runtime main-path proof');
+    expect(SERVER_INSTRUCTIONS).toContain('relevance reasons');
+    expect(SERVER_INSTRUCTIONS).toContain('static ranking explanations');
   });
 
   it('mentions trace, precise locators, edge evidence, and boundaries in installed agent instructions', () => {
@@ -28,5 +30,7 @@ describe('CodeGraph instructions', () => {
     expect(INSTRUCTIONS_TEMPLATE).toContain('boundary');
     expect(INSTRUCTIONS_TEMPLATE).toContain('static score');
     expect(INSTRUCTIONS_TEMPLATE).toContain('not runtime main-path proof');
+    expect(INSTRUCTIONS_TEMPLATE).toContain('relevance reasons');
+    expect(INSTRUCTIONS_TEMPLATE).toContain('complete semantic proof');
   });
 });

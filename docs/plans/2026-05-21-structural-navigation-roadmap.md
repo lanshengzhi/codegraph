@@ -2,7 +2,7 @@
 
 > 关联设计：[`docs/codegraph-structural-navigation-usability-design.md`](../codegraph-structural-navigation-usability-design.md)  
 > 前置基础：[`docs/codegraph-addressability-and-trace-design.md`](../codegraph-addressability-and-trace-design.md)、[`docs/plans/2026-05-21-codegraph-addressability-and-trace-tdd-plan.md`](./2026-05-21-codegraph-addressability-and-trace-tdd-plan.md)  
-> 状态：roadmap / P0、P0b、P1a implemented; P1b+ planning input
+> 状态：roadmap / P0、P0b、P1 implemented / validated / review-passed (2026-05-22)
 > 范围：把结构导航可用性设计拆解成可独立验收、可 TDD 实施的计划批次。
 
 ---
@@ -115,7 +115,7 @@
 
 ### P1：edge metadata 与排序理由
 
-**状态：** P1a implemented / validated (2026-05-22)；P1b/P1c planned。详见 [`2026-05-21-structural-navigation-p1-edge-metadata-ranking-plan.md`](./2026-05-21-structural-navigation-p1-edge-metadata-ranking-plan.md) 的 P1a 实施状态与剩余验收清单。
+**状态：** implemented / validated / review-passed (2026-05-22)。详见 [`2026-05-21-structural-navigation-p1-edge-metadata-ranking-plan.md`](./2026-05-21-structural-navigation-p1-edge-metadata-ranking-plan.md) 的实施结果与验收清单。
 
 **目标：** 增加更可审计的索引 metadata，并让 trace/context/explore 的排序理由更透明。
 
@@ -236,9 +236,10 @@ codegraph_field_sites({ field: "systemPrompt" })
 1. ✅ P0 输出层计划已完成并通过验证。
 2. 基于 P0 实际输出痛点细化 P0b。
 3. ✅ P1a edge metadata carrier 与 MCP edge evidence 已完成；schema migration 采用 `unresolved_refs.metadata` + existing `edges.metadata` JSON。
-4. 下一步优先 P1b trace ranking / ranking reason，再做 P1c context/explore relevance reason。
-5. P2a 与 P2b 可并行规划，但应分开实现，因为一个是 node structure，一个是 field/key sites。
-6. P3 等核心 trace 可信度体验稳定后再做。
+4. ✅ P1b trace ranking / ranking reason 已完成并通过 review follow-up。
+5. ✅ P1c context/explore relevance reason 已完成并通过 review follow-up；context/explore reason 只解释 static relevance / sorting，不声明完整语义证明。
+6. P2a 与 P2b 可并行规划，但应分开实现，因为一个是 node structure，一个是 field/key sites。
+7. P3 等核心 trace 可信度体验稳定后再做。
 
 ---
 
@@ -276,8 +277,6 @@ codegraph_field_sites({ field: "systemPrompt" })
 
 ## 待细化问题
 
-1. P1 是否需要 schema migration，还是继续使用 edge `metadata` JSON 承载新增字段？
-2. `codegraph_node` 的结构摘要参数采用 `detail: "structure"`、`structure: true`，还是独立工具？
-3. `codegraph_field_sites` 是否作为 MCP 新工具，还是先做库 API 后接 MCP？
-4. registry candidates 的首批 pattern 选择 provider registry、route registry，还是 workspace imports？
-5. context/explore 的 reason 是直接在 markdown 中输出，还是先增加结构化内部结果再格式化？
+1. `codegraph_node` 的结构摘要参数采用 `detail: "structure"`、`structure: true`，还是独立工具？
+2. `codegraph_field_sites` 是否作为 MCP 新工具，还是先做库 API 后接 MCP？
+3. registry candidates 的首批 pattern 选择 provider registry、route registry，还是 workspace imports？

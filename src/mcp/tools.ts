@@ -37,6 +37,7 @@ import {
 import { clamp, validatePathWithinRoot, validateProjectPath } from '../utils';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { formatRelevanceReason } from '../context/formatter';
 
 /** Maximum output length to prevent context bloat (characters) */
 const MAX_OUTPUT_LENGTH = 15000;
@@ -1436,6 +1437,7 @@ export class ToolHandler {
         const trimmed = fileSection.slice(0, remaining) + '\n... (trimmed) ...';
 
         lines.push(fileHeader);
+        lines.push(`Reason: ${formatRelevanceReason(subgraph.reasons?.files[filePath])}`);
         lines.push('');
         lines.push('```' + lang);
         lines.push(trimmed);
@@ -1448,6 +1450,7 @@ export class ToolHandler {
       }
 
       lines.push(fileHeader);
+      lines.push(`Reason: ${formatRelevanceReason(subgraph.reasons?.files[filePath])}`);
       lines.push('');
       lines.push('```' + lang);
       lines.push(fileSection);
