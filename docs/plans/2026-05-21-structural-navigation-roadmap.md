@@ -186,6 +186,8 @@ codegraph_node({ nodeId, detail: "structure" })
 
 ### P2b：字段读写与对象构造线索
 
+**状态：** draft plan written (2026-05-22)。详见 [`2026-05-22-structural-navigation-p2b-field-sites-plan.md`](./2026-05-22-structural-navigation-p2b-field-sites-plan.md) 的测试驱动实施计划。
+
 **目标：** 新增按字段 / payload key 定位读写、对象构造、映射位置的线索能力。
 
 **建议形态：**
@@ -205,13 +207,15 @@ codegraph_field_sites({ field: "systemPrompt" })
 - destructuring；
 - property read/write；
 - return object fields；
-- provider payload key mapping hints。
+- field/key mapping hints（包括 provider payload key mapping）。
 
 **明确不做：**
 
 - 完整 interprocedural dataflow；
 - 完整 alias analysis；
 - 证明字段一定到达 runtime payload。
+
+**详细计划：** [`2026-05-22-structural-navigation-p2b-field-sites-plan.md`](./2026-05-22-structural-navigation-p2b-field-sites-plan.md)
 
 ---
 
@@ -242,7 +246,7 @@ codegraph_field_sites({ field: "systemPrompt" })
 3. ✅ P1a edge metadata carrier 与 MCP edge evidence 已完成；schema migration 采用 `unresolved_refs.metadata` + existing `edges.metadata` JSON。
 4. ✅ P1b trace ranking / ranking reason 已完成并通过 review follow-up。
 5. ✅ P1c context/explore relevance reason 已完成并通过 review follow-up；context/explore reason 只解释 static relevance / sorting，不声明完整语义证明。
-6. ✅ P2a TDD 实施计划已撰写；P2a 与 P2b 可并行规划，但应分开实现，因为一个是 node structure，一个是 field/key sites。
+6. ✅ P2a TDD 实施计划已撰写并完成验证；P2b TDD 实施计划已撰写，后续应独立实现，因为一个是 node structure，一个是 field/key sites。
 7. P3 等核心 trace 可信度体验稳定后再做。
 
 ---
