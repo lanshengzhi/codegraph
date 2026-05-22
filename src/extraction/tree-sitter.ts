@@ -102,6 +102,7 @@ function extractName(node: SyntaxNode, source: string, extractor: LanguageExtrac
     if (
       child &&
       (child.type === 'identifier' ||
+        child.type === 'property_identifier' ||
         child.type === 'type_identifier' ||
         child.type === 'simple_identifier' ||
         child.type === 'constant')

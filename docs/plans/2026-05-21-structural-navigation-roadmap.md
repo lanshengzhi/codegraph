@@ -2,7 +2,7 @@
 
 > 关联设计：[`docs/codegraph-structural-navigation-usability-design.md`](../codegraph-structural-navigation-usability-design.md)  
 > 前置基础：[`docs/codegraph-addressability-and-trace-design.md`](../codegraph-addressability-and-trace-design.md)、[`docs/plans/2026-05-21-codegraph-addressability-and-trace-tdd-plan.md`](./2026-05-21-codegraph-addressability-and-trace-tdd-plan.md)  
-> 状态：roadmap / P0、P0b、P1 implemented / validated / review-passed (2026-05-22)
+> 状态：roadmap / P0、P0b、P1、P2a implemented / validated / review-passed (2026-05-22)
 > 范围：把结构导航可用性设计拆解成可独立验收、可 TDD 实施的计划批次。
 
 ---
@@ -148,6 +148,8 @@
 
 ### P2a：长函数结构摘要
 
+**状态：** implemented / validated / review-passed (2026-05-22)。详见 [`2026-05-22-structural-navigation-p2a-node-structure-plan.md`](./2026-05-22-structural-navigation-p2a-node-structure-plan.md) 的测试驱动实施计划与验证记录。
+
 **目标：** 为 `codegraph_node` 提供介于签名和完整源码之间的结构导航层。
 
 **建议形态：**
@@ -177,6 +179,8 @@ codegraph_node({ nodeId, detail: "structure" })
 - 跨语言完整支持；
 - 语义证明；
 - 替代 `read`。
+
+**详细计划：** [`2026-05-22-structural-navigation-p2a-node-structure-plan.md`](./2026-05-22-structural-navigation-p2a-node-structure-plan.md)
 
 ---
 
@@ -238,7 +242,7 @@ codegraph_field_sites({ field: "systemPrompt" })
 3. ✅ P1a edge metadata carrier 与 MCP edge evidence 已完成；schema migration 采用 `unresolved_refs.metadata` + existing `edges.metadata` JSON。
 4. ✅ P1b trace ranking / ranking reason 已完成并通过 review follow-up。
 5. ✅ P1c context/explore relevance reason 已完成并通过 review follow-up；context/explore reason 只解释 static relevance / sorting，不声明完整语义证明。
-6. P2a 与 P2b 可并行规划，但应分开实现，因为一个是 node structure，一个是 field/key sites。
+6. ✅ P2a TDD 实施计划已撰写；P2a 与 P2b 可并行规划，但应分开实现，因为一个是 node structure，一个是 field/key sites。
 7. P3 等核心 trace 可信度体验稳定后再做。
 
 ---

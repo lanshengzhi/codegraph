@@ -467,6 +467,110 @@ export interface FileRecord {
 }
 
 // =============================================================================
+// Node Structure Types
+// =============================================================================
+
+export type NodeStructureStatus =
+  | 'available'
+  | 'not_found'
+  | 'unsupported-language'
+  | 'unsupported-node-kind'
+  | 'parser-unavailable'
+  | 'source-unavailable'
+  | 'source-too-large'
+  | 'source-stale'
+  | 'no-body'
+  | 'parse-error';
+
+export type NodeStructureItemKind =
+  | 'early-return'
+  | 'branch'
+  | 'guard'
+  | 'switch'
+  | 'loop'
+  | 'try'
+  | 'catch'
+  | 'finally'
+  | 'callsite'
+  | 'callback-invocation'
+  | 'object-literal'
+  | 'return-value';
+
+export interface SourceRange {
+  path: string;
+  startLine: number;
+  endLine: number;
+  /** 0-indexed, matching existing Node.startColumn convention. */
+  startColumn?: number;
+  /** 0-indexed, matching existing Node.endColumn convention. */
+  endColumn?: number;
+}
+
+export type NodeStructureEnclosingKind =
+  | 'guard'
+  | 'branch'
+  | 'loop'
+  | 'try'
+  | 'catch'
+  | 'finally'
+  | 'switch';
+
+export interface NodeStructureEnclosingContext {
+  kind: NodeStructureEnclosingKind;
+  range: SourceRange;
+  /** Syntax-derived label for the enclosing control-flow item, capped. */
+  label: string;
+}
+
+export interface NodeStructureItem {
+  kind: NodeStructureItemKind;
+  range: SourceRange;
+  /** Nesting depth inside the target function body; formatter may indent from this. */
+  depth: number;
+  /** Short syntax-derived label, e.g. `if (!user)`, `for (... of ...)`, `return send(payload)`. */
+  label: string;
+  /** Optional raw condition/discriminant text, capped. */
+  conditionText?: string;
+  /** Optional callee/constructor text, capped. */
+  calleeText?: string;
+  /** Optional receiver for property calls, capped. */
+  receiverText?: string;
+  /** Optional property/member name for property calls. */
+  propertyText?: string;
+  /** Object literal keys when cheap and local to the literal. */
+  objectKeys?: string[];
+  /** Nearest enclosing control-flow stack, outermost → innermost. */
+  enclosing?: NodeStructureEnclosingContext[];
+  /** Conservative syntax-only caveat for heuristic items. */
+  note?: string;
+}
+
+export interface NodeStructureOptions {
+  /** Cap for syntax-derived labels / conditions / callee text. */
+  maxLabelChars?: number;
+  /** Maximum static object keys to list per object literal. */
+  maxObjectKeys?: number;
+  /** Include first-level inline callback bodies; default true; ordinary nested functions remain excluded. */
+  includeNestedCallbacks?: boolean;
+  /** Query-time full-file parse guard; default is conservative. */
+  maxSourceBytes?: number;
+}
+
+export interface NodeStructureFormatOptions {
+  /** Per output section cap. Formatter computes omitted counts from the full item list. */
+  maxItemsPerSection?: number;
+}
+
+export interface NodeStructureResult {
+  status: NodeStructureStatus;
+  node?: NodeHandle;
+  language?: Language;
+  items: NodeStructureItem[];
+  caveats: string[];
+  recommendations: string[];
+}
+
+// =============================================================================
 // Extraction Types
 // =============================================================================
 

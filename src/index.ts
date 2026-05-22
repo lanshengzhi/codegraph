@@ -25,6 +25,8 @@ import {
   LocatorResolution,
   TraceOptions,
   TraceResult,
+  NodeStructureOptions,
+  NodeStructureResult,
 } from './types';
 import { DatabaseConnection, getDatabasePath } from './db';
 import { QueryBuilder } from './db/queries';
@@ -60,6 +62,7 @@ import {
 } from './addressability/format';
 import { Mutex, FileLock } from './utils';
 import { FileWatcher, WatchOptions } from './sync';
+import { NodeStructureAnalyzer } from './structure/node-structure';
 
 // Re-export types for consumers
 export * from './types';
@@ -609,6 +612,26 @@ export class CodeGraph {
    */
   getNode(id: string): Node | null {
     return this.queries.getNodeById(id);
+  }
+
+  /**
+   * Build an on-demand AST-derived structure summary for a function/method node.
+   * This does not persist data or require a DB migration.
+   */
+  async getNodeStructure(nodeId: string, options?: NodeStructureOptions): Promise<NodeStructureResult> {
+    const node = this.queries.getNodeById(nodeId);
+    if (!node) {
+      return {
+        status: 'not_found',
+        items: [],
+        caveats: ['Static AST structure only. Node was not found in the current index.'],
+        recommendations: ['codegraph sync --quiet'],
+      };
+    }
+
+    const analyzer = new NodeStructureAnalyzer(this.projectRoot);
+    const fileRecord = this.getFile(node.filePath);
+    return analyzer.analyze(node, fileRecord, options);
   }
 
   /**

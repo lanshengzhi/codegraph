@@ -44,7 +44,7 @@ of calls; a grep/read exploration is dozens.
 - **"What calls this?"** → \`codegraph_callers\` (includes edge evidence/callsite when recorded, e.g. \`direct-call\`, \`property-call\`, \`constructor-call\`, \`import\`, \`decorator\`, \`bare-call\`, or resolver fallback)
 - **"What does this call?"** → \`codegraph_callees\` (includes edge evidence/callsite when recorded, e.g. \`direct-call\`, \`property-call\`, \`constructor-call\`, \`import\`, \`decorator\`, \`bare-call\`, or resolver fallback)
 - **"What would changing this break?"** → \`codegraph_impact\`
-- **"Show me this symbol's source / signature / docstring."** → \`codegraph_node\`
+- **"Show me this symbol's source / signature / docstring."** → \`codegraph_node\` (for long TS/JS functions, try \`detail: "structure"\` first for a static structure summary, then includeCode/read only where needed)
 - **"Trace this lifecycle / path from entry to target."** → \`codegraph_trace\` (path-shaped static graph guidance with handles, edge evidence, static ranking score/reason, and boundary/low-evidence caveats; not runtime proof)
 - **"Show me several related symbols' source / survey an area."** → \`codegraph_explore\` (ONE capped call; prefer over many codegraph_node/Read; file headers may include static relevance reasons)
 - **"What's in directory X?"** → \`codegraph_files\`
@@ -53,6 +53,7 @@ of calls; a grep/read exploration is dozens.
 ## Common chains
 
 - **Onboarding**: \`codegraph_context\` first. If still unclear, \`codegraph_explore\` for breadth, then \`codegraph_node\` on specific symbols.
+- **Long function inspection**: \`codegraph_node({ nodeId, detail: "structure" })\` for a static AST structure summary with exact ranges; use targeted Read or \`includeCode=true\` only after choosing the relevant range.
 - **Architecture/lifecycle flow**: \`codegraph_context\` to find entry points → \`codegraph_trace\` with nodeId/file:line handles → inspect any boundary/low-evidence handles → \`codegraph_explore\` or Read on returned ranges.
 - **Refactor planning**: \`codegraph_search\` → \`codegraph_callers\` → \`codegraph_impact\`. The blast-radius answer comes from impact, not from walking callers manually.
 - **Debugging a regression**: \`codegraph_callers\` of the suspected symbol; widen with \`codegraph_impact\` if an unexpected call appears.
@@ -71,5 +72,6 @@ of calls; a grep/read exploration is dozens.
 - Cross-file resolution is best-effort name matching; ambiguous calls may return multiple candidates.
 - Trace/callers/callees edge evidence reflects indexed static edges. When recorded, \`evidence=\` may show source syntax such as \`direct-call\`, \`property-call\`, \`constructor-call\`, \`import\`, \`decorator\`, or \`bare-call\`; otherwise resolver fallback may show \`name-match\`, \`framework\`, or \`fuzzy\`. \`not-recorded\` means the index did not capture that fact, not that runtime behavior is absent. Trace ranks candidate paths with a static score/reason from recorded evidence (direct-call ratio, edge confidence, scope, low-evidence, optional/test/generated penalties); this is sorting guidance, not runtime main-path proof. Trace may show boundary / low-evidence entries with exact handles for source inspection.
 - Context/explore relevance reasons are static ranking explanations from recorded search/graph signals (exact name/path matches, query-symbol extraction, entry-point proximity, generic-name or test/generated penalties). They explain why candidates were returned, not complete semantic proof.
+- \`codegraph_node({ nodeId, detail: "structure" })\` is static AST navigation for long TS/JS function/method bodies. It highlights ranges, control-flow syntax, callsites, callback-like hints, and local object/return construction; it is not runtime proof, a complete control-flow/dataflow graph, or an LLM summary.
 - No live correctness validation — that's still the TypeScript compiler / test suite / linter's job. Codegraph supplements those with structural context they don't have.
 `;

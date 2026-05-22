@@ -133,6 +133,7 @@ The gains scale with codebase size: on large repos the agent answers from the in
 | **Full-Text Search** | Find code by name instantly across your entire codebase, powered by FTS5 |
 | **Exact Handles** | Search/node results include reusable `nodeId`, `qualifiedName`, and `file:line` ranges for precise follow-up calls |
 | **Static Trace** | `codegraph_trace` returns candidate entry→target graph paths with edge kinds, callsite lines, boundary / low-evidence caveats, gaps, and next-step handles |
+| **Long Function Structure** | `codegraph_node({ nodeId, detail: "structure" })` gives TS/JS function/method AST structure summaries with exact ranges before you read full source |
 | **Impact Analysis** | Trace callers, callees, and the full impact radius of any symbol before making changes |
 | **Always Fresh** | File watcher uses native OS events (FSEvents/inotify/ReadDirectoryChangesW) with debounced auto-sync — the graph stays current as you code, zero config |
 | **19+ Languages** | TypeScript, JavaScript, Python, Go, Rust, Java, C#, PHP, Ruby, C, C++, Swift, Kotlin, Dart, Lua, Luau, Svelte, Liquid, Pascal/Delphi |
@@ -277,7 +278,7 @@ Use CodeGraph directly for structural exploration: `codegraph_context` for orien
 | `codegraph_trace` | Trace likely static graph paths with edge/callsite metadata and boundary / low-evidence caveats |
 | `codegraph_callers` / `codegraph_callees` | Trace local call flow |
 | `codegraph_impact` | Check what's affected before editing |
-| `codegraph_node` | Get a single symbol/locator's details |
+| `codegraph_node` | Get a single symbol/locator's details; use `detail: "structure"` for long TS/JS function/method structure summaries before reading full source |
 | `codegraph_explore` | Inspect several related symbols' source in one capped call |
 
 ### If `.codegraph/` does NOT exist
@@ -397,13 +398,13 @@ When running as an MCP server, CodeGraph exposes these tools to Claude Code:
 | `codegraph_callers` | Find what calls a function |
 | `codegraph_callees` | Find what a function calls |
 | `codegraph_impact` | Analyze what code is affected by changing a symbol |
-| `codegraph_node` | Get details about a specific symbol/locator (optionally with source code) |
+| `codegraph_node` | Get details about a specific symbol/locator; pass `detail: "structure"` for a static AST structure summary of long TS/JS functions/methods, or `includeCode=true` for source |
 | `codegraph_explore` | Return source for several related symbols grouped by file, plus a relationship map, in one call |
 | `codegraph_trace` | Trace likely static graph paths from an entry locator to a target symbol/query/locator, including boundary / low-evidence caveats when recorded |
 | `codegraph_files` | Get indexed file structure (faster than filesystem scanning) |
 | `codegraph_status` | Check index health and statistics |
 
-Search and node results include copyable handles such as `nodeId=...`, `qualifiedName=...`, and `range=src/file.ts:10-20`. Pass those back to `codegraph_node`, `codegraph_callers`, `codegraph_callees`, `codegraph_impact`, or `codegraph_trace` as `nodeId`, `qualifiedName`, `path`+`line`, or `fileLine`. Trace output may highlight max-depth frontiers, indexed dead ends, metadata-not-recorded edges, or low-evidence/static framework boundaries with exact follow-up handles; these are static graph caveats, not runtime proof.
+Search and node results include copyable handles such as `nodeId=...`, `qualifiedName=...`, and `range=src/file.ts:10-20`. Pass those back to `codegraph_node`, `codegraph_callers`, `codegraph_callees`, `codegraph_impact`, or `codegraph_trace` as `nodeId`, `qualifiedName`, `path`+`line`, or `fileLine`. For long TS/JS functions, `codegraph_node({ nodeId, detail: "structure" })` returns static AST navigation sections (control flow, key callsites, construction/returns) with exact ranges and caveats; it is not runtime proof or an LLM summary. Trace output may highlight max-depth frontiers, indexed dead ends, metadata-not-recorded edges, or low-evidence/static framework boundaries with exact follow-up handles; these are static graph caveats, not runtime proof.
 
 Example trace input:
 

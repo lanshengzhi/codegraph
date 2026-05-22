@@ -22,6 +22,10 @@ import type {
   TraceEdge,
   TraceBoundary,
   ReferenceSourceEvidence,
+  NodeStructureFormatOptions,
+  NodeStructureItem,
+  NodeStructureResult,
+  SourceRange,
 } from '../types';
 import { formatNodeHandle, matchesSymbol as nodeMatchesSymbol } from '../addressability/format';
 import { createHash } from 'crypto';
@@ -478,7 +482,7 @@ export const tools: ToolDefinition[] = [
   },
   {
     name: 'codegraph_node',
-    description: 'Get detailed info about ONE symbol or exact locator (location, range, handle, signature, docstring). Accepts symbol, nodeId, qualifiedName, path+line, or fileLine. Pass includeCode=true for source: a function/method returns its body; a class/interface/struct/enum returns a compact member OUTLINE.',
+    description: 'Get detailed info about ONE symbol or exact locator (location, range, handle, signature, docstring). Accepts symbol, nodeId, qualifiedName, path+line, or fileLine. For long TS/JS functions/methods, pass detail="structure" for a static AST structure summary without full source. Pass includeCode=true for source: a function/method returns its body; a class/interface/struct/enum returns a compact member OUTLINE.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -487,6 +491,11 @@ export const tools: ToolDefinition[] = [
           type: 'boolean',
           description: 'Include full source code (default: false to minimize context)',
           default: false,
+        },
+        detail: {
+          type: 'string',
+          description: 'Optional detail mode. Use "structure" for a static AST-derived structure summary of long TS/JS function/method bodies without full source.',
+          enum: ['structure'],
         },
         projectPath: projectPathProperty,
       },
@@ -1549,9 +1558,22 @@ export class ToolHandler {
     const locator = this.argsToLocator(args);
     if (this.isToolResult(locator)) return locator;
 
+    const detail = this.parseNodeDetail(args.detail);
+    if (this.isToolResult(detail)) return detail;
+
     const cg = this.getCodeGraph(args.projectPath as string | undefined);
     // Default to false to minimize context usage
     const includeCode = args.includeCode === true;
+
+    if (detail === 'structure') {
+      const resolution = cg.resolveNodeLocator(locator);
+      if (resolution.status !== 'resolved' || !resolution.node) {
+        return this.textResult(this.formatResolutionFailure(resolution));
+      }
+      const result = await cg.getNodeStructure(resolution.node.id);
+      const formatted = this.formatNodeStructure(result, { includeCodeIgnored: includeCode });
+      return this.textResult(this.truncateOutput(formatted));
+    }
 
     let match: { node: Node; note: string } | null;
     if (this.isSymbolOnlyLocator(locator)) {
@@ -2027,6 +2049,13 @@ export class ToolHandler {
       result.push(item);
     }
     return result;
+  }
+
+  private parseNodeDetail(value: unknown): 'structure' | undefined | ToolResult {
+    if (value === undefined) return undefined;
+    if (typeof value !== 'string') return this.errorResult('detail must be a string');
+    if (value !== 'structure') return this.errorResult('Invalid detail: expected "structure"');
+    return 'structure';
   }
 
   /**
@@ -2601,6 +2630,89 @@ export class ToolHandler {
     }
 
     return lines.join('\n');
+  }
+
+  private formatNodeStructure(
+    result: NodeStructureResult,
+    options: NodeStructureFormatOptions & { includeCodeIgnored?: boolean } = {}
+  ): string {
+    const lines: string[] = [];
+    const node = result.node;
+    if (node) {
+      lines.push(`## ${node.name} (${node.kind}) — structure`, '');
+      lines.push(`Location: ${node.path}:${node.startLine}`);
+      lines.push(`Range: ${node.path}:${node.startLine}-${node.endLine}`);
+      lines.push(`Handle: nodeId=${node.nodeId} qualifiedName=${node.qualifiedName} range=${node.path}:${node.startLine}-${node.endLine}`);
+    } else {
+      lines.push('## Node structure', '');
+    }
+
+    if (options.includeCodeIgnored) {
+      lines.push('', '> Note: includeCode ignored because detail=structure.');
+    }
+
+    lines.push('', '> Static AST structure only. This is reading-navigation guidance, not runtime proof or an LLM summary.');
+
+    for (const caveat of result.caveats) {
+      if (!/Static AST structure only/.test(caveat)) lines.push(`> ${caveat}`);
+    }
+
+    if (result.status !== 'available') {
+      lines.push('', `Status: ${result.status}`);
+      if (result.recommendations.length > 0) {
+        lines.push('', '### Recommended next');
+        for (const rec of result.recommendations) lines.push(`- ${rec}`);
+      }
+      return lines.join('\n');
+    }
+
+    const cap = options.maxItemsPerSection ?? 40;
+    const controlKinds = new Set(['guard', 'branch', 'switch', 'loop', 'try', 'catch', 'finally']);
+    const callKinds = new Set(['callsite', 'callback-invocation']);
+    const constructionKinds = new Set(['early-return', 'object-literal', 'return-value']);
+
+    this.formatStructureSection(lines, 'Control flow', result.items.filter((item) => controlKinds.has(item.kind)), cap);
+    this.formatStructureSection(lines, 'Key callsites', result.items.filter((item) => callKinds.has(item.kind)), cap);
+    this.formatStructureSection(lines, 'Construction / returns', result.items.filter((item) => constructionKinds.has(item.kind)), cap);
+
+    if (result.recommendations.length > 0) {
+      lines.push('', '### Recommended next');
+      for (const rec of result.recommendations) lines.push(`- ${rec}`);
+    }
+
+    return lines.join('\n');
+  }
+
+  private formatStructureSection(lines: string[], title: string, items: NodeStructureItem[], cap: number): void {
+    lines.push('', `### ${title}`);
+    if (items.length === 0) {
+      lines.push('- (none found)');
+      return;
+    }
+
+    const shown = items.slice(0, cap);
+    for (const item of shown) {
+      lines.push(...this.formatStructureItem(item));
+    }
+    if (items.length > shown.length) {
+      lines.push(`- ... ${items.length - shown.length} more items omitted; use includeCode/read for full source`);
+    }
+  }
+
+  private formatStructureItem(item: NodeStructureItem): string[] {
+    const indent = '  '.repeat(Math.min(item.depth, 4));
+    const keys = item.objectKeys && item.objectKeys.length > 0 ? ` keys: ${item.objectKeys.join(', ')}` : '';
+    const lines = [`${indent}- ${item.kind} ${this.formatSourceRange(item.range)} — ${item.label}${keys}`];
+    if (item.enclosing && item.enclosing.length > 0) {
+      lines.push(`${indent}  within: ${item.enclosing.map((ctx) => `${ctx.kind} ${this.formatSourceRange(ctx.range)}`).join(' > ')}`);
+    }
+    if (item.note) lines.push(`${indent}  note: ${item.note}`);
+    return lines;
+  }
+
+  private formatSourceRange(range: SourceRange): string {
+    if (range.startLine === range.endLine) return `${range.path}:${range.startLine}`;
+    return `${range.path}:${range.startLine}-${range.endLine}`;
   }
 
   /**

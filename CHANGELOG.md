@@ -10,6 +10,7 @@ and adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **MCP / node structure**: `codegraph_node` now supports `detail: "structure"` for TypeScript/JavaScript/TSX/JSX functions and methods, returning static AST navigation sections (control flow, key callsites, construction/returns) with exact ranges instead of full source. The output is explicitly reading guidance, not runtime proof or an LLM summary.
 - **MCP / addressability**: Search, node, caller/callee, and impact results now expose copyable exact handles (`nodeId`, `qualifiedName`, and `range=file:line-line`). `codegraph_node`, `codegraph_callers`, `codegraph_callees`, and `codegraph_impact` can use those handles directly via `nodeId`, `qualifiedName`, `path`+`line`, or `fileLine`, so same-name symbols no longer require fuzzy re-resolution.
 - **MCP / trace**: New `codegraph_trace` tool returns candidate static graph paths from an entry locator to a target symbol/query/locator, including path steps, edge kinds, callsite lines when available, caveats, and recommended exact follow-ups.
 - **MCP / edge evidence**: `codegraph_trace`, `codegraph_callers`, and `codegraph_callees` now surface static edge evidence in their text output — edge kind, callsite, provenance, resolution confidence, resolver, and explicit `not-recorded` fallbacks — so agents can see when a path is only a static candidate instead of runtime proof.
