@@ -10,6 +10,7 @@ import {
   Edge,
   FileRecord,
   UnresolvedReference,
+  ReferenceMetadata,
   NodeKind,
   EdgeKind,
   Language,
@@ -79,6 +80,7 @@ interface UnresolvedRefRow {
   candidates: string | null;
   file_path: string;
   language: string;
+  metadata: string | null;
 }
 
 /**
@@ -138,6 +140,29 @@ function rowToFileRecord(row: FileRow): FileRecord {
     nodeCount: row.node_count,
     errors: row.errors ? safeJsonParse(row.errors, undefined) : undefined,
   };
+}
+
+function parseReferenceMetadata(value: string | null): ReferenceMetadata | undefined {
+  if (!value) return undefined;
+  const parsed = safeJsonParse<unknown>(value, undefined);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+  return parsed as ReferenceMetadata;
+}
+
+function rowToUnresolvedReference(row: UnresolvedRefRow): UnresolvedReference {
+  const ref: UnresolvedReference = {
+    fromNodeId: row.from_node_id,
+    referenceName: row.reference_name,
+    referenceKind: row.reference_kind as EdgeKind,
+    line: row.line,
+    column: row.col,
+    candidates: row.candidates ? safeJsonParse(row.candidates, undefined) : undefined,
+    filePath: row.file_path,
+    language: row.language as Language,
+  };
+  const metadata = parseReferenceMetadata(row.metadata);
+  if (metadata) ref.metadata = metadata;
+  return ref;
 }
 
 /**
@@ -1252,8 +1277,8 @@ export class QueryBuilder {
   insertUnresolvedRef(ref: UnresolvedReference): void {
     if (!this.stmts.insertUnresolved) {
       this.stmts.insertUnresolved = this.db.prepare(`
-        INSERT INTO unresolved_refs (from_node_id, reference_name, reference_kind, line, col, candidates, file_path, language)
-        VALUES (@fromNodeId, @referenceName, @referenceKind, @line, @col, @candidates, @filePath, @language)
+        INSERT INTO unresolved_refs (from_node_id, reference_name, reference_kind, line, col, candidates, file_path, language, metadata)
+        VALUES (@fromNodeId, @referenceName, @referenceKind, @line, @col, @candidates, @filePath, @language, @metadata)
       `);
     }
 
@@ -1266,6 +1291,7 @@ export class QueryBuilder {
       candidates: ref.candidates ? JSON.stringify(ref.candidates) : null,
       filePath: ref.filePath ?? '',
       language: ref.language ?? 'unknown',
+      metadata: ref.metadata ? JSON.stringify(ref.metadata) : null,
     });
   }
 
@@ -1304,16 +1330,7 @@ export class QueryBuilder {
       );
     }
     const rows = this.stmts.getUnresolvedByName.all(name) as UnresolvedRefRow[];
-    return rows.map((row) => ({
-      fromNodeId: row.from_node_id,
-      referenceName: row.reference_name,
-      referenceKind: row.reference_kind as EdgeKind,
-      line: row.line,
-      column: row.col,
-      candidates: row.candidates ? safeJsonParse(row.candidates, undefined) : undefined,
-      filePath: row.file_path,
-      language: row.language as Language,
-    }));
+    return rows.map(rowToUnresolvedReference);
   }
 
   /**
@@ -1321,16 +1338,7 @@ export class QueryBuilder {
    */
   getUnresolvedReferences(): UnresolvedReference[] {
     const rows = this.db.prepare('SELECT * FROM unresolved_refs').all() as UnresolvedRefRow[];
-    return rows.map((row) => ({
-      fromNodeId: row.from_node_id,
-      referenceName: row.reference_name,
-      referenceKind: row.reference_kind as EdgeKind,
-      line: row.line,
-      column: row.col,
-      candidates: row.candidates ? safeJsonParse(row.candidates, undefined) : undefined,
-      filePath: row.file_path,
-      language: row.language as Language,
-    }));
+    return rows.map(rowToUnresolvedReference);
   }
 
   /**
@@ -1357,16 +1365,7 @@ export class QueryBuilder {
       );
     }
     const rows = this.stmts.getUnresolvedBatch.all(limit, offset) as UnresolvedRefRow[];
-    return rows.map((row) => ({
-      fromNodeId: row.from_node_id,
-      referenceName: row.reference_name,
-      referenceKind: row.reference_kind as EdgeKind,
-      line: row.line,
-      column: row.col,
-      candidates: row.candidates ? safeJsonParse(row.candidates, undefined) : undefined,
-      filePath: row.file_path,
-      language: row.language as Language,
-    }));
+    return rows.map(rowToUnresolvedReference);
   }
 
   /**
@@ -1403,16 +1402,7 @@ export class QueryBuilder {
       .prepare(`SELECT * FROM unresolved_refs WHERE file_path IN (${placeholders})`)
       .all(...filePaths) as UnresolvedRefRow[];
 
-    return rows.map((row) => ({
-      fromNodeId: row.from_node_id,
-      referenceName: row.reference_name,
-      referenceKind: row.reference_kind as EdgeKind,
-      line: row.line,
-      column: row.col,
-      candidates: row.candidates ? safeJsonParse(row.candidates, undefined) : undefined,
-      filePath: row.file_path,
-      language: row.language as Language,
-    }));
+    return rows.map(rowToUnresolvedReference);
   }
 
   /**

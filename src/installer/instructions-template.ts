@@ -32,8 +32,8 @@ Use codegraph for **structural** questions — what calls what, what would break
 | Question | Tool |
 |---|---|
 | "Where is X defined?" / "Find symbol named X" | \`codegraph_search\` |
-| "What calls function Y?" | \`codegraph_callers\` (shows edge evidence/callsite when recorded) |
-| "What does Y call?" | \`codegraph_callees\` (shows edge evidence/callsite when recorded) |
+| "What calls function Y?" | \`codegraph_callers\` (shows edge evidence/callsite when recorded: \`direct-call\`, \`property-call\`, \`constructor-call\`, \`import\`, \`decorator\`, \`bare-call\`, or resolver fallback) |
+| "What does Y call?" | \`codegraph_callees\` (shows edge evidence/callsite when recorded: \`direct-call\`, \`property-call\`, \`constructor-call\`, \`import\`, \`decorator\`, \`bare-call\`, or resolver fallback) |
 | "What would break if I changed Z?" | \`codegraph_impact\` |
 | "Show me Y's signature / source / docstring" | \`codegraph_node\` |
 | "Trace a lifecycle / entry-to-target path" | \`codegraph_trace\` (static candidate with boundary / low-evidence caveats, not runtime proof) |
@@ -48,7 +48,7 @@ Use codegraph for **structural** questions — what calls what, what would break
 - **Trust codegraph results.** They come from a full AST parse. Do NOT re-verify them with grep — that's slower, less accurate, and wastes context.
 - **Don't grep first** when looking up a symbol by name. \`codegraph_search\` is faster and returns kind + location + signature + exact handles in one call.
 - **Use exact handles once you have them.** Search/node/trace results include nodeId and range; pass nodeId, file:line/fileLine, or path+line directly to \`codegraph_node\`, \`codegraph_callers\`, \`codegraph_callees\`, \`codegraph_impact\`, or \`codegraph_trace\`.
-- **Treat edge evidence as static.** \`codegraph_trace\`, \`codegraph_callers\`, and \`codegraph_callees\` show edge kind, callsite, provenance, confidence, and resolver when recorded. Trace may also show boundary / low-evidence entries with exact handles to inspect next. \`not-recorded\` means CodeGraph did not capture that fact; it is not runtime proof.
+- **Treat edge evidence as static.** \`codegraph_trace\`, \`codegraph_callers\`, and \`codegraph_callees\` show edge kind, source syntax evidence (such as \`direct-call\`, \`property-call\`, \`constructor-call\`, \`import\`, \`decorator\`, or \`bare-call\`) or resolver fallback (\`name-match\`, \`framework\`, \`fuzzy\`), callsite, provenance, confidence, and resolver when recorded. Trace may also show boundary / low-evidence entries with exact handles to inspect next. \`not-recorded\` means CodeGraph did not capture that fact; it is not runtime proof.
 - **Don't chain \`codegraph_search\` + \`codegraph_node\`** when you just want context — \`codegraph_context\` is one call.
 - **Don't loop \`codegraph_node\` over many symbols** — one \`codegraph_explore\` call returns several symbols' source grouped in a single capped call, while each separate node/Read call re-reads the whole context and costs far more.
 - **Index lag**: the file watcher debounces ~500ms behind writes; don't re-query immediately after editing a file in the same turn.

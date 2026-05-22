@@ -94,6 +94,55 @@ export const LANGUAGES = [
 
 export type Language = (typeof LANGUAGES)[number];
 
+/**
+ * Conservative source-level evidence recorded at extraction time for a reference.
+ * This describes syntax shape only; resolution confidence/runtime behavior is separate.
+ */
+export const REFERENCE_SOURCE_EVIDENCE_VALUES = [
+  'direct-call',
+  'property-call',
+  'constructor-call',
+  'import',
+  'decorator',
+  'bare-call',
+  'not-recorded',
+] as const;
+
+export type ReferenceSourceEvidence = (typeof REFERENCE_SOURCE_EVIDENCE_VALUES)[number];
+
+/**
+ * Additive metadata carried from extraction through unresolved refs into resolved edges.
+ * All fields must be directly observed from syntax or resolver metadata.
+ */
+export interface ReferenceMetadata {
+  /** Original reference name used for resolution. */
+  referenceName?: string;
+  /** Original edge kind before resolution-time promotion. */
+  referenceKind?: EdgeKind;
+  /** Conservative source-level evidence from extraction. */
+  sourceEvidence?: ReferenceSourceEvidence;
+  /** Raw callee / constructor / imported target text, capped. */
+  calleeText?: string;
+  /** For property calls: receiver/object text, capped. */
+  receiverText?: string;
+  /** For property calls: property/member text. */
+  propertyText?: string;
+  /** Tree-sitter node type for call expression or reference expression. */
+  expressionKind?: string;
+  /** Whether property lookup is computed/dynamic, when known. */
+  isComputed?: boolean;
+  /** Whether optional chaining/call is present, when known. */
+  isOptional?: boolean;
+  /** Number of call arguments, when cheap to compute. */
+  argumentCount?: number;
+  /** Framework name when a framework extractor/resolver produced the reference, if known. */
+  framework?: string;
+  /** Denormalized source file at extraction time. */
+  filePath?: string;
+  /** Denormalized source language at extraction time. */
+  language?: Language;
+}
+
 // =============================================================================
 // Core Graph Types
 // =============================================================================
@@ -273,6 +322,28 @@ export interface TraceEdge {
   confidence?: number;
   /** Static resolution strategy that produced this edge, when recorded. */
   resolvedBy?: string;
+  /** Source syntax shape recorded at extraction time, when available. */
+  sourceEvidence?: ReferenceSourceEvidence;
+  /** Original reference name used for resolution. */
+  referenceName?: string;
+  /** Original unresolved edge kind before resolution-time promotion. */
+  referenceKind?: EdgeKind;
+  /** Raw callee / constructor / imported target text, capped. */
+  calleeText?: string;
+  /** Receiver/object text for property calls, capped. */
+  receiverText?: string;
+  /** Property/member text for property calls, capped. */
+  propertyText?: string;
+  /** Tree-sitter node type for the expression that emitted the reference. */
+  expressionKind?: string;
+  /** Whether property lookup is computed/dynamic, when known. */
+  isComputed?: boolean;
+  /** Whether optional chaining/call is present, when known. */
+  isOptional?: boolean;
+  /** Number of call arguments, when recorded. */
+  argumentCount?: number;
+  /** Framework name when recorded. */
+  framework?: string;
 }
 
 /**
@@ -435,6 +506,9 @@ export interface UnresolvedReference {
 
   /** Possible qualified names it might resolve to */
   candidates?: string[];
+
+  /** Conservative source-level metadata captured during extraction. */
+  metadata?: ReferenceMetadata;
 }
 
 // =============================================================================

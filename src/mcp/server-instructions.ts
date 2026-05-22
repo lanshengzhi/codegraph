@@ -41,8 +41,8 @@ of calls; a grep/read exploration is dozens.
 
 - **"What is the symbol named X?"** → \`codegraph_search\`
 - **"What's the deal with this task / feature / area?"** → \`codegraph_context\` (PRIMARY — composes search + node + callers + callees in one call)
-- **"What calls this?"** → \`codegraph_callers\` (includes edge evidence/callsite when recorded)
-- **"What does this call?"** → \`codegraph_callees\` (includes edge evidence/callsite when recorded)
+- **"What calls this?"** → \`codegraph_callers\` (includes edge evidence/callsite when recorded, e.g. \`direct-call\`, \`property-call\`, \`constructor-call\`, \`import\`, \`decorator\`, \`bare-call\`, or resolver fallback)
+- **"What does this call?"** → \`codegraph_callees\` (includes edge evidence/callsite when recorded, e.g. \`direct-call\`, \`property-call\`, \`constructor-call\`, \`import\`, \`decorator\`, \`bare-call\`, or resolver fallback)
 - **"What would changing this break?"** → \`codegraph_impact\`
 - **"Show me this symbol's source / signature / docstring."** → \`codegraph_node\`
 - **"Trace this lifecycle / path from entry to target."** → \`codegraph_trace\` (path-shaped static graph guidance with handles, edge evidence, and boundary/low-evidence caveats; not runtime proof)
@@ -69,6 +69,6 @@ of calls; a grep/read exploration is dozens.
 
 - Index lags file writes by ~1 second.
 - Cross-file resolution is best-effort name matching; ambiguous calls may return multiple candidates.
-- Trace/callers/callees edge evidence reflects indexed static edges; \`not-recorded\` means the index did not capture that fact, not that runtime behavior is absent. Trace may show boundary / low-evidence entries with exact handles for source inspection.
+- Trace/callers/callees edge evidence reflects indexed static edges. When recorded, \`evidence=\` may show source syntax such as \`direct-call\`, \`property-call\`, \`constructor-call\`, \`import\`, \`decorator\`, or \`bare-call\`; otherwise resolver fallback may show \`name-match\`, \`framework\`, or \`fuzzy\`. \`not-recorded\` means the index did not capture that fact, not that runtime behavior is absent. Trace may show boundary / low-evidence entries with exact handles for source inspection.
 - No live correctness validation — that's still the TypeScript compiler / test suite / linter's job. Codegraph supplements those with structural context they don't have.
 `;

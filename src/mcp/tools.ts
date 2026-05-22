@@ -5,6 +5,7 @@
  */
 
 import CodeGraph, { findNearestCodeGraphRoot } from '../index';
+import { REFERENCE_SOURCE_EVIDENCE_VALUES } from '../types';
 import type {
   Node,
   Edge,
@@ -20,6 +21,7 @@ import type {
   TraceResult,
   TraceEdge,
   TraceBoundary,
+  ReferenceSourceEvidence,
 } from '../types';
 import { formatNodeHandle, matchesSymbol as nodeMatchesSymbol } from '../addressability/format';
 import { createHash } from 'crypto';
@@ -38,6 +40,9 @@ import { join } from 'path';
 
 /** Maximum output length to prevent context bloat (characters) */
 const MAX_OUTPUT_LENGTH = 15000;
+const REFERENCE_SOURCE_EVIDENCE_SET: ReadonlySet<string> = new Set(REFERENCE_SOURCE_EVIDENCE_VALUES);
+const NAME_MATCH_RESOLVERS = new Set(['exact-match', 'qualified-name', 'instance-method', 'import', 'file-path']);
+const EDGE_TEXT_FIELD_CAP = 120;
 
 /**
  * Maximum length for free-form string inputs (query, task, symbol).
@@ -2395,14 +2400,27 @@ export class ToolHandler {
   private formatEdgeEvidence(edge: Edge | TraceEdge, sourceNode?: Node | NodeHandle | null): string {
     const confidence = this.edgeConfidence(edge);
     const resolvedBy = this.edgeResolvedBy(edge);
-    return [
+    const evidence = this.edgeEvidenceDisplay(edge, resolvedBy);
+    const reference = this.edgeTextField(edge, 'referenceName');
+    const receiver = this.edgeTextField(edge, 'receiverText');
+    const property = this.edgeTextField(edge, 'propertyText');
+    const callee = this.edgeTextField(edge, 'calleeText');
+
+    const parts = [
       `edgeKind=${edge.kind}`,
+      `evidence=${evidence}`,
+    ];
+    if (reference) parts.push(`reference=${reference}`);
+    if (receiver) parts.push(`receiver=${receiver}`);
+    if (property) parts.push(`property=${property}`);
+    if (callee && callee !== reference) parts.push(`callee=${callee}`);
+    parts.push(
       `callsite=${this.formatCallsite(edge.line, edge.column, sourceNode)}`,
       `provenance=${edge.provenance ?? 'unknown'}`,
       `confidence=${confidence === undefined ? 'not-recorded' : confidence.toFixed(2)}`,
-      `resolvedBy=${resolvedBy ?? 'not-recorded'}`,
-      'evidence=not-recorded',
-    ].join(' ');
+      `resolvedBy=${resolvedBy ?? 'not-recorded'}`
+    );
+    return parts.join(' ');
   }
 
   private edgeConfidence(edge: Edge | TraceEdge): number | undefined {
@@ -2423,6 +2441,44 @@ export class ToolHandler {
       return edge.metadata.resolvedBy;
     }
     return undefined;
+  }
+
+  private edgeEvidenceDisplay(edge: Edge | TraceEdge, resolvedBy: string | undefined): string {
+    const sourceEvidence = this.edgeSourceEvidence(edge);
+    if (sourceEvidence && sourceEvidence !== 'not-recorded') return sourceEvidence;
+    if (resolvedBy === 'fuzzy') return 'fuzzy';
+    if (resolvedBy === 'framework') return 'framework';
+    if (resolvedBy && NAME_MATCH_RESOLVERS.has(resolvedBy)) return 'name-match';
+    return 'not-recorded';
+  }
+
+  private edgeSourceEvidence(edge: Edge | TraceEdge): ReferenceSourceEvidence | undefined {
+    const direct = (edge as { sourceEvidence?: unknown }).sourceEvidence;
+    if (typeof direct === 'string' && REFERENCE_SOURCE_EVIDENCE_SET.has(direct)) {
+      return direct as ReferenceSourceEvidence;
+    }
+    if ('metadata' in edge && edge.metadata) {
+      const value = edge.metadata.sourceEvidence;
+      if (typeof value === 'string' && REFERENCE_SOURCE_EVIDENCE_SET.has(value)) {
+        return value as ReferenceSourceEvidence;
+      }
+    }
+    return undefined;
+  }
+
+  private edgeTextField(edge: Edge | TraceEdge, field: 'referenceName' | 'calleeText' | 'receiverText' | 'propertyText'): string | undefined {
+    const direct = (edge as unknown as Record<string, unknown>)[field];
+    if (typeof direct === 'string' && direct.length > 0) return this.formatEdgeText(direct);
+    if ('metadata' in edge && edge.metadata) {
+      const value = edge.metadata[field];
+      if (typeof value === 'string' && value.length > 0) return this.formatEdgeText(value);
+    }
+    return undefined;
+  }
+
+  private formatEdgeText(value: string): string {
+    const cleaned = value.replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim();
+    return cleaned.length > EDGE_TEXT_FIELD_CAP ? cleaned.slice(0, EDGE_TEXT_FIELD_CAP) : cleaned;
   }
 
   private formatCallsite(line?: number, column?: number, sourceNode?: Node | NodeHandle | null): string {

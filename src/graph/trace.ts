@@ -2,6 +2,8 @@ import {
   Edge,
   EdgeKind,
   Node,
+  REFERENCE_SOURCE_EVIDENCE_VALUES,
+  ReferenceSourceEvidence,
   TraceBoundary,
   TraceBoundaryType,
   TraceEdge,
@@ -16,6 +18,7 @@ const DEFAULT_MAX_DEPTH = 6;
 const DEFAULT_MAX_PATHS = 5;
 const DEFAULT_VISITED_CAP = 1000;
 const DEFAULT_BOUNDARY_CAP = 5;
+const REFERENCE_SOURCE_EVIDENCE_SET: ReadonlySet<string> = new Set(REFERENCE_SOURCE_EVIDENCE_VALUES);
 
 interface InternalStep {
   node: Node;
@@ -325,11 +328,12 @@ export class GraphTracer {
   }
 
   private toTraceEdge(edge: Edge): TraceEdge {
-    const confidence = edge.metadata && typeof edge.metadata.confidence === 'number' && Number.isFinite(edge.metadata.confidence)
-      ? edge.metadata.confidence
+    const metadata = edge.metadata;
+    const confidence = metadata && typeof metadata.confidence === 'number' && Number.isFinite(metadata.confidence)
+      ? metadata.confidence
       : undefined;
-    const resolvedBy = edge.metadata && typeof edge.metadata.resolvedBy === 'string'
-      ? edge.metadata.resolvedBy
+    const resolvedBy = metadata && typeof metadata.resolvedBy === 'string'
+      ? metadata.resolvedBy
       : undefined;
 
     return {
@@ -341,6 +345,17 @@ export class GraphTracer {
       provenance: edge.provenance,
       confidence,
       resolvedBy,
+      sourceEvidence: readSourceEvidence(metadata),
+      referenceName: readStringMetadata(metadata, 'referenceName'),
+      referenceKind: readStringMetadata(metadata, 'referenceKind') as EdgeKind | undefined,
+      calleeText: readStringMetadata(metadata, 'calleeText'),
+      receiverText: readStringMetadata(metadata, 'receiverText'),
+      propertyText: readStringMetadata(metadata, 'propertyText'),
+      expressionKind: readStringMetadata(metadata, 'expressionKind'),
+      isComputed: readBooleanMetadata(metadata, 'isComputed'),
+      isOptional: readBooleanMetadata(metadata, 'isOptional'),
+      argumentCount: readNumberMetadata(metadata, 'argumentCount'),
+      framework: readStringMetadata(metadata, 'framework'),
     };
   }
 
@@ -354,6 +369,28 @@ export class GraphTracer {
       default: return 5;
     }
   }
+}
+
+function readStringMetadata(metadata: Record<string, unknown> | undefined, key: string): string | undefined {
+  const value = metadata?.[key];
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function readBooleanMetadata(metadata: Record<string, unknown> | undefined, key: string): boolean | undefined {
+  const value = metadata?.[key];
+  return typeof value === 'boolean' ? value : undefined;
+}
+
+function readNumberMetadata(metadata: Record<string, unknown> | undefined, key: string): number | undefined {
+  const value = metadata?.[key];
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function readSourceEvidence(metadata: Record<string, unknown> | undefined): ReferenceSourceEvidence | undefined {
+  const value = metadata?.sourceEvidence;
+  return typeof value === 'string' && REFERENCE_SOURCE_EVIDENCE_SET.has(value)
+    ? value as ReferenceSourceEvidence
+    : undefined;
 }
 
 function clampNumber(value: number, min: number, max: number): number {

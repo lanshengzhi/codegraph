@@ -11,7 +11,7 @@ import { ToolHandler } from '../src/mcp/tools';
 import { DatabaseConnection } from '../src/db';
 import { QueryBuilder } from '../src/db/queries';
 import { GraphTracer } from '../src/graph/trace';
-import type { Node } from '../src/types';
+import type { Edge, Node } from '../src/types';
 
 beforeAll(async () => {
   await initGrammars();
@@ -128,6 +128,24 @@ function writePropertyBoundaryFixture(root: string): void {
   );
 }
 
+function writeResolvedPropertyTraceFixture(root: string): void {
+  const src = path.join(root, 'src');
+  fs.mkdirSync(src, { recursive: true });
+  fs.writeFileSync(
+    path.join(src, 'provider.ts'),
+    [
+      'export class Provider {',
+      '  streamSimple(): void {}',
+      '}',
+      '',
+      'export function propertyEntry(provider: Provider): void {',
+      '  provider.streamSimple();',
+      '}',
+      '',
+    ].join('\n')
+  );
+}
+
 function makeTraceNode(id: string, name: string, startLine: number): Node {
   return {
     id,
@@ -174,6 +192,8 @@ describe.skipIf(!HAS_SQLITE)('CodeGraph.trace', () => {
     expect(result.paths[0]!.edges.some((e) => typeof e.line === 'number')).toBe(true);
     expect(result.paths[0]!.edges[0]!.confidence).toEqual(expect.any(Number));
     expect(result.paths[0]!.edges[0]!.resolvedBy).toEqual(expect.any(String));
+    expect(result.paths[0]!.edges[0]!.sourceEvidence).toBe('direct-call');
+    expect(result.paths[0]!.edges[0]!.referenceName).toBe('service');
     expect(result.boundaries).toEqual([]);
   });
 
@@ -458,7 +478,9 @@ describe.skipIf(!HAS_SQLITE)('MCP codegraph_trace', () => {
     expect(text).toContain('confidence=');
     expect(text).not.toContain('confidence=not-recorded');
     expect(text).toContain('resolvedBy=exact-match');
-    expect(text).toContain('evidence=not-recorded');
+    expect(text).toContain('evidence=direct-call');
+    expect(text).toContain('reference=service');
+    expect(text).not.toContain('edgeKind=calls evidence=not-recorded');
     expect(text).toContain('Static graph candidate only');
     expect(text).toMatch(/Recommended next/i);
     expect(text).toContain('codegraph_node({ nodeId:');
@@ -484,6 +506,18 @@ describe.skipIf(!HAS_SQLITE)('MCP codegraph_trace', () => {
     expect(text).toContain('codegraph_callees({ nodeId:');
     expect(text).toContain('codegraph_callers({ nodeId:');
     expect(text).toContain('read src/flow.ts:');
+  });
+
+  it('formats callers and callees with the same recorded edge evidence', async () => {
+    const callees = await handler.execute('codegraph_callees', { symbol: 'entry' });
+    expect(callees.isError).toBeFalsy();
+    expect(callees.content[0].text).toContain('evidence=direct-call');
+    expect(callees.content[0].text).toContain('reference=service');
+
+    const callers = await handler.execute('codegraph_callers', { symbol: 'service' });
+    expect(callers.isError).toBeFalsy();
+    expect(callers.content[0].text).toContain('evidence=direct-call');
+    expect(callers.content[0].text).toContain('reference=service');
   });
 
   it('formats incoming and bidirectional trace callsites with the edge source file', async () => {
@@ -550,6 +584,93 @@ describe.skipIf(!HAS_SQLITE)('MCP codegraph_trace', () => {
     expect(text).not.toContain('type=registry');
     expect(text).not.toContain('registry-candidate');
     expect(text).not.toContain('Possible binding sites');
+  });
+});
+
+describe.skipIf(!HAS_SQLITE)('MCP edge evidence output', () => {
+  let root: string;
+  let cg: CodeGraph;
+  let handler: ToolHandler;
+
+  beforeEach(async () => {
+    root = tmpRoot();
+    writeResolvedPropertyTraceFixture(root);
+    cg = CodeGraph.initSync(root, {
+      config: { include: ['src/**/*.ts'], exclude: [] },
+    });
+    await cg.indexAll();
+    handler = new ToolHandler(cg);
+  });
+
+  afterEach(() => {
+    handler?.closeAll();
+    cg?.destroy();
+    cleanup(root);
+  });
+
+  it('formats recorded property-call evidence with receiver and property text', async () => {
+    const result = await handler.execute('codegraph_trace', {
+      from: 'propertyEntry',
+      to: 'streamSimple',
+      maxDepth: 2,
+    });
+    expect(result.isError).toBeFalsy();
+    const text = result.content[0].text;
+    expect(text).toContain('evidence=property-call');
+    expect(text).toContain('reference=provider.streamSimple');
+    expect(text).toContain('receiver=provider');
+    expect(text).toContain('property=streamSimple');
+    expect(text).not.toContain('edgeKind=calls evidence=not-recorded');
+  });
+});
+
+describe('MCP edge evidence fallbacks', () => {
+  type EdgeFormatter = { formatEdgeEvidence(edge: Edge): string };
+
+  function format(edge: Edge): string {
+    const handler = new ToolHandler(null) as unknown as EdgeFormatter;
+    return handler.formatEdgeEvidence(edge);
+  }
+
+  it('falls back to name-match when source evidence is missing but resolver metadata exists', () => {
+    const text = format({
+      source: 'a',
+      target: 'b',
+      kind: 'calls',
+      metadata: { resolvedBy: 'exact-match', referenceName: 'service' },
+    });
+    expect(text).toContain('evidence=name-match');
+    expect(text).toContain('reference=service');
+  });
+
+  it('treats explicit not-recorded or invalid source evidence as missing for resolver fallback', () => {
+    const explicit = format({
+      source: 'a',
+      target: 'b',
+      kind: 'calls',
+      metadata: { sourceEvidence: 'not-recorded', resolvedBy: 'exact-match' },
+    });
+    expect(explicit).toContain('evidence=name-match');
+
+    const invalid = format({
+      source: 'a',
+      target: 'b',
+      kind: 'calls',
+      metadata: { sourceEvidence: 'made-up', resolvedBy: 'exact-match' },
+    });
+    expect(invalid).toContain('evidence=name-match');
+  });
+
+  it('uses fuzzy and framework resolver evidence when source shape is absent', () => {
+    expect(format({ source: 'a', target: 'b', kind: 'calls', metadata: { resolvedBy: 'fuzzy' } })).toContain('evidence=fuzzy');
+    expect(format({ source: 'a', target: 'b', kind: 'calls', metadata: { resolvedBy: 'framework' } })).toContain('evidence=framework');
+  });
+
+  it('keeps metadata-missing edges at not-recorded', () => {
+    const text = format({ source: 'a', target: 'b', kind: 'contains' });
+    expect(text).toContain('evidence=not-recorded');
+    expect(text).toContain('confidence=not-recorded');
+    expect(text).toContain('resolvedBy=not-recorded');
   });
 });
 

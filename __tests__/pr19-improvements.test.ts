@@ -6,7 +6,7 @@
  * - Arrow function extraction (body traversal)
  * - Graph traversal 'both' direction fix
  * - Best-candidate resolution picking
- * - Schema v2 migration (filePath/language on unresolved_refs)
+ * - Schema migrations (filePath/language and metadata on unresolved_refs)
  * - Batch insert for unresolved refs
  * - SQLite performance pragmas
  * - MCP symbol disambiguation and output truncation
@@ -299,7 +299,7 @@ describe('Best-Candidate Resolution', () => {
 describe('Schema v2 Migration', () => {
   it.skipIf(!HAS_SQLITE)('should have correct current schema version', async () => {
     const { CURRENT_SCHEMA_VERSION } = await import('../src/db/migrations');
-    expect(CURRENT_SCHEMA_VERSION).toBe(4);
+    expect(CURRENT_SCHEMA_VERSION).toBe(5);
   });
 
   it.skipIf(!HAS_SQLITE)('should have migration for version 2', async () => {

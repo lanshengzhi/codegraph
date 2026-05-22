@@ -210,6 +210,80 @@ function main() {
     const calls = result.unresolvedReferences.filter((r) => r.referenceKind === 'calls');
     expect(calls.some((c) => c.referenceName === 'processData')).toBe(true);
   });
+
+  it('records source evidence metadata for TypeScript calls, imports, and constructors', () => {
+    const code = `
+import { dep } from './dep';
+class Provider {
+  streamSimple(): void {}
+}
+
+function service(): void {}
+
+export function entry(provider: Provider): void {
+  service();
+  provider.streamSimple();
+  this.localHandler();
+  new Provider();
+}
+`;
+    const result = extractFromSource('main.ts', code);
+
+    const direct = result.unresolvedReferences.find((r) => r.referenceKind === 'calls' && r.referenceName === 'service');
+    expect(direct?.metadata).toMatchObject({
+      sourceEvidence: 'direct-call',
+      calleeText: 'service',
+      referenceName: 'service',
+      referenceKind: 'calls',
+    });
+
+    const property = result.unresolvedReferences.find((r) => r.referenceKind === 'calls' && r.referenceName === 'provider.streamSimple');
+    expect(property?.metadata).toMatchObject({
+      sourceEvidence: 'property-call',
+      receiverText: 'provider',
+      propertyText: 'streamSimple',
+      calleeText: 'provider.streamSimple',
+    });
+
+    const thisCall = result.unresolvedReferences.find((r) => r.referenceKind === 'calls' && r.referenceName === 'localHandler');
+    expect(thisCall?.metadata).toMatchObject({
+      sourceEvidence: 'property-call',
+      receiverText: 'this',
+      propertyText: 'localHandler',
+      calleeText: 'this.localHandler',
+    });
+
+    const instantiation = result.unresolvedReferences.find((r) => r.referenceKind === 'instantiates' && r.referenceName === 'Provider');
+    expect(instantiation?.metadata).toMatchObject({
+      sourceEvidence: 'constructor-call',
+      calleeText: 'Provider',
+      referenceKind: 'instantiates',
+    });
+
+    const importRef = result.unresolvedReferences.find((r) => r.referenceKind === 'imports');
+    expect(importRef?.metadata).toMatchObject({
+      sourceEvidence: 'import',
+      calleeText: './dep',
+      referenceKind: 'imports',
+    });
+  });
+
+  it('caps long source evidence text fields', () => {
+    const receiver = 'r'.repeat(140);
+    const property = 'p'.repeat(140);
+    const code = `
+export function entry(${receiver}: any): void {
+  ${receiver}.${property}();
+}
+`;
+    const result = extractFromSource('long.ts', code);
+    const ref = result.unresolvedReferences.find((r) => r.referenceKind === 'calls' && r.referenceName.includes('.'));
+
+    expect(ref?.metadata?.sourceEvidence).toBe('property-call');
+    expect(ref?.metadata?.receiverText).toHaveLength(120);
+    expect(ref?.metadata?.propertyText).toHaveLength(120);
+    expect(ref?.metadata?.calleeText?.length).toBeLessThanOrEqual(120);
+  });
 });
 
 describe('Arrow Function Export Extraction', () => {
@@ -1890,6 +1964,31 @@ require_relative 'helper'
       expect(names).toContain('json');
       expect(names).toContain('yaml');
       expect(names).toContain('helper');
+    });
+  });
+
+  describe('Ruby bare calls', () => {
+    it('records bare-call source evidence for statement-level method calls', () => {
+      const code = `
+def entry
+  reset
+end
+
+def reset
+end
+`;
+      const result = extractFromSource('app.rb', code);
+      const ref = result.unresolvedReferences.find(
+        (r) => r.referenceKind === 'calls' && r.referenceName === 'reset'
+      );
+
+      expect(ref).toBeDefined();
+      expect(ref?.metadata).toMatchObject({
+        sourceEvidence: 'bare-call',
+        calleeText: 'reset',
+        referenceName: 'reset',
+        referenceKind: 'calls',
+      });
     });
   });
 
@@ -3674,6 +3773,11 @@ class X {}
       (r) => r.referenceKind === 'decorates' && r.referenceName === 'Foo'
     );
     expect(decorClass).toBeDefined();
+    expect(decorClass?.metadata).toMatchObject({
+      sourceEvidence: 'decorator',
+      calleeText: 'Foo',
+      referenceKind: 'decorates',
+    });
   });
 
   it('does NOT attribute a prior class\'s decorator to the next class', () => {

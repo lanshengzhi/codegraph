@@ -783,6 +783,70 @@ def bootstrap():
     });
   });
 
+  describe('resolved edge metadata propagation', () => {
+    it('propagates property-call extraction metadata onto resolved edges', async () => {
+      fs.mkdirSync(path.join(tempDir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(tempDir, 'src/provider.ts'),
+        [
+          'export class Provider {',
+          '  streamSimple(): void {}',
+          '}',
+          '',
+          'export function entry(provider: Provider): void {',
+          '  provider.streamSimple();',
+          '}',
+          '',
+        ].join('\n')
+      );
+
+      cg = await CodeGraph.init(tempDir, { index: true });
+      const entry = cg.getNodesByKind('function').find((n) => n.name === 'entry');
+      expect(entry).toBeDefined();
+      const edge = cg.getCallees(entry!.id).find((item) => item.edge.metadata?.referenceName === 'provider.streamSimple')?.edge;
+
+      expect(edge).toBeDefined();
+      expect(edge!.kind).toBe('calls');
+      expect(edge!.metadata).toMatchObject({
+        confidence: expect.any(Number),
+        resolvedBy: expect.any(String),
+        referenceName: 'provider.streamSimple',
+        referenceKind: 'calls',
+        sourceEvidence: 'property-call',
+        receiverText: 'provider',
+        propertyText: 'streamSimple',
+      });
+    });
+
+    it('propagates direct-call extraction metadata onto resolved edges', async () => {
+      fs.mkdirSync(path.join(tempDir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(tempDir, 'src/flow.ts'),
+        [
+          'function service(): void {}',
+          'export function entry(): void {',
+          '  service();',
+          '}',
+          '',
+        ].join('\n')
+      );
+
+      cg = await CodeGraph.init(tempDir, { index: true });
+      const entry = cg.getNodesByKind('function').find((n) => n.name === 'entry');
+      expect(entry).toBeDefined();
+      const edge = cg.getCallees(entry!.id).find((item) => item.node.name === 'service')?.edge;
+
+      expect(edge?.metadata).toMatchObject({
+        confidence: expect.any(Number),
+        resolvedBy: expect.any(String),
+        referenceName: 'service',
+        referenceKind: 'calls',
+        sourceEvidence: 'direct-call',
+        calleeText: 'service',
+      });
+    });
+  });
+
   describe('re-export chain following', () => {
     it('chases a 3-hop barrel chain (wildcard → named → declaration)', async () => {
       // main.ts → all.ts (wildcard) → index.ts (named) → auth.ts (declaration).

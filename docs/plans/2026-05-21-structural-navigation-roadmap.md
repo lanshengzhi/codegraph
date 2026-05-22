@@ -2,7 +2,7 @@
 
 > 关联设计：[`docs/codegraph-structural-navigation-usability-design.md`](../codegraph-structural-navigation-usability-design.md)  
 > 前置基础：[`docs/codegraph-addressability-and-trace-design.md`](../codegraph-addressability-and-trace-design.md)、[`docs/plans/2026-05-21-codegraph-addressability-and-trace-tdd-plan.md`](./2026-05-21-codegraph-addressability-and-trace-tdd-plan.md)  
-> 状态：roadmap / P0 and P0b implemented, P1+ planning input
+> 状态：roadmap / P0、P0b、P1a implemented; P1b+ planning input
 > 范围：把结构导航可用性设计拆解成可独立验收、可 TDD 实施的计划批次。
 
 ---
@@ -27,7 +27,7 @@
 
 - Addressability：结果中已有 `nodeId`、`qualifiedName`、`range` 等 handle 输出；`node` / `callers` / `callees` / `impact` / `trace` 支持 exact locator。
 - Trace：已有 `CodeGraph.trace()`、`GraphTracer` 与 MCP `codegraph_trace`，可返回 path-shaped 结果、edge kind、callsite line、target candidates、gaps、recommendations。
-- Edge metadata：resolution 阶段已为 resolved edge 写入 `metadata.confidence` 与 `metadata.resolvedBy`；`Edge` 类型也支持 `provenance`、`line`、`column`。
+- Edge metadata：P1a 已为 unresolved refs / resolved edges 增加 source evidence metadata carrier；resolved edge 现可携带 `referenceName`、`referenceKind`、`sourceEvidence`、callee/receiver/property text，并保留 `metadata.confidence` 与 `metadata.resolvedBy`；`Edge` 类型也支持 `provenance`、`line`、`column`。
 - 文件视图：`codegraph_files` 已从索引返回 tree/flat/grouped 视图；P0 已增强 no-match 输出，明确 indexed-only 边界与 sync/read 检查建议。
 
 因此首批增强应优先复用已有数据，而不是先引入 schema migration、LSP、compiler API 或完整 dataflow。
@@ -115,6 +115,8 @@
 
 ### P1：edge metadata 与排序理由
 
+**状态：** P1a implemented / validated (2026-05-22)；P1b/P1c planned。详见 [`2026-05-21-structural-navigation-p1-edge-metadata-ranking-plan.md`](./2026-05-21-structural-navigation-p1-edge-metadata-ranking-plan.md) 的 P1a 实施状态与剩余验收清单。
+
 **目标：** 增加更可审计的索引 metadata，并让 trace/context/explore 的排序理由更透明。
 
 **主要能力：**
@@ -122,7 +124,7 @@
 - resolution/extraction 为 edge metadata 保留更多来源信号，例如 `referenceName`、`referenceKind`、可能的 receiver/property/callee text。
 - 区分 direct-call、property-call、name-match、framework、fuzzy 等 edge evidence。
 - trace path 排序理由：direct-call ratio、edge confidence、scope match、test/generated penalty、optional-branch keyword penalty。
-- `codegraph_context` / `codegraph_explore` entry/file/symbol reason 最小版：exact name/path match、graph proximity、generic name penalty。
+- `codegraph_context` entry/node reason 与 `codegraph_explore` file reason 最小版：exact name/path match、graph proximity、generic name penalty。
 
 **预计触及：**
 
@@ -139,6 +141,8 @@
 - 完整控制流；
 - 完整 alias/dataflow；
 - registry runtime branch 唯一判定。
+
+**详细计划：** [`2026-05-21-structural-navigation-p1-edge-metadata-ranking-plan.md`](./2026-05-21-structural-navigation-p1-edge-metadata-ranking-plan.md)
 
 ---
 
@@ -231,9 +235,10 @@ codegraph_field_sites({ field: "systemPrompt" })
 
 1. ✅ P0 输出层计划已完成并通过验证。
 2. 基于 P0 实际输出痛点细化 P0b。
-3. P0b 完成后，再决定 P1 metadata 是否需要 schema migration 或仅扩展 JSON metadata。
-4. P2a 与 P2b 可并行规划，但应分开实现，因为一个是 node structure，一个是 field/key sites。
-5. P3 等核心 trace 可信度体验稳定后再做。
+3. ✅ P1a edge metadata carrier 与 MCP edge evidence 已完成；schema migration 采用 `unresolved_refs.metadata` + existing `edges.metadata` JSON。
+4. 下一步优先 P1b trace ranking / ranking reason，再做 P1c context/explore relevance reason。
+5. P2a 与 P2b 可并行规划，但应分开实现，因为一个是 node structure，一个是 field/key sites。
+6. P3 等核心 trace 可信度体验稳定后再做。
 
 ---
 

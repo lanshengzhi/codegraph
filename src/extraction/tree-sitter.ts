@@ -14,6 +14,8 @@ import {
   ExtractionResult,
   ExtractionError,
   UnresolvedReference,
+  ReferenceMetadata,
+  ReferenceSourceEvidence,
 } from '../types';
 import { getParser, detectLanguage, isLanguageSupported } from './grammars';
 import { generateNodeId, getNodeText, getChildByField, getPrecedingDocstring } from './tree-sitter-helpers';
@@ -121,6 +123,41 @@ const INSTANTIATION_KINDS: ReadonlySet<string> = new Set([
   'object_creation_expression',      // java / c#
   'instance_creation_expression',    // some grammars
 ]);
+
+const REFERENCE_METADATA_TEXT_CAP = 120;
+
+function sanitizeMetadataText(text: string, cap: number = REFERENCE_METADATA_TEXT_CAP): string {
+  const cleaned = text.replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return cleaned.length > cap ? cleaned.slice(0, cap) : cleaned;
+}
+
+function countArguments(callNode: SyntaxNode): number | undefined {
+  const args = getChildByField(callNode, 'arguments') ||
+    callNode.namedChildren.find((child) => child.type === 'arguments' || child.type === 'argument_list');
+  if (!args) return undefined;
+  return args.namedChildren.length;
+}
+
+function createReferenceMetadata(
+  sourceEvidence: ReferenceSourceEvidence,
+  expressionNode: SyntaxNode,
+  fields: Omit<ReferenceMetadata, 'sourceEvidence' | 'expressionKind'> = {}
+): ReferenceMetadata {
+  const metadata: ReferenceMetadata = {
+    ...fields,
+    sourceEvidence,
+    expressionKind: expressionNode.type,
+  };
+
+  for (const key of ['referenceName', 'calleeText', 'receiverText', 'propertyText', 'framework', 'filePath'] as const) {
+    const value = metadata[key];
+    if (typeof value === 'string') {
+      metadata[key] = sanitizeMetadataText(value);
+    }
+  }
+
+  return metadata;
+}
 
 /**
  * TreeSitterExtractor - Main extraction class
@@ -1287,6 +1324,13 @@ export class TreeSitterExtractor {
               referenceKind: 'imports',
               line: node.startPosition.row + 1,
               column: node.startPosition.column,
+              metadata: createReferenceMetadata('import', node, {
+                referenceName: info.moduleName,
+                referenceKind: 'imports',
+                calleeText: info.moduleName,
+                filePath: this.filePath,
+                language: this.language,
+              }),
             });
           }
         }
@@ -1338,6 +1382,13 @@ export class TreeSitterExtractor {
                 referenceKind: 'imports',
                 line: spec.startPosition.row + 1,
                 column: spec.startPosition.column,
+                metadata: createReferenceMetadata('import', spec, {
+                  referenceName: importPath,
+                  referenceKind: 'imports',
+                  calleeText: importPath,
+                  filePath: this.filePath,
+                  language: this.language,
+                }),
               });
             }
           }
@@ -1403,6 +1454,11 @@ export class TreeSitterExtractor {
 
     // Get the function/method being called
     let calleeName = '';
+    let sourceEvidence: ReferenceSourceEvidence = 'direct-call';
+    let calleeText = '';
+    let receiverText: string | undefined;
+    let propertyText: string | undefined;
+    let isComputed: boolean | undefined;
 
     // Java/Kotlin method_invocation has 'object' + 'name' fields instead of 'function'
     // PHP member_call_expression has 'object' + 'name', scoped_call_expression has 'scope' + 'name'
@@ -1417,6 +1473,10 @@ export class TreeSitterExtractor {
       receiverName = receiverName.replace(/^\$/, '');
 
       if (methodName) {
+        sourceEvidence = 'property-call';
+        receiverText = receiverName;
+        propertyText = methodName;
+        calleeText = `${receiverName}.${methodName}`;
         // Skip self/this/parent/static receivers — they don't aid resolution
         const SKIP_RECEIVERS = new Set(['self', 'this', 'cls', 'super', 'parent', 'static']);
         if (SKIP_RECEIVERS.has(receiverName)) {
@@ -1444,13 +1504,20 @@ export class TreeSitterExtractor {
             }
           }
           if (property) {
+            sourceEvidence = 'property-call';
             const methodName = getNodeText(property, this.source);
+            propertyText = methodName;
+            calleeText = getNodeText(func, this.source);
+            isComputed = func.type === 'member_expression' && calleeText.includes('[') ? true : undefined;
             // Include receiver name for qualified resolution (e.g., console.print → "console.print")
             // This helps the resolver distinguish method calls from bare function calls
             // (e.g., Python's console.print() vs builtin print())
             // Skip self/this/cls as they don't aid resolution
             const receiver = getChildByField(func, 'object') || getChildByField(func, 'operand') || func.namedChild(0);
             const SKIP_RECEIVERS = new Set(['self', 'this', 'cls', 'super']);
+            if (receiver) {
+              receiverText = getNodeText(receiver, this.source);
+            }
             if (receiver && (receiver.type === 'identifier' || receiver.type === 'simple_identifier')) {
               const receiverName = getNodeText(receiver, this.source);
               if (!SKIP_RECEIVERS.has(receiverName)) {
@@ -1465,19 +1532,34 @@ export class TreeSitterExtractor {
         } else if (func.type === 'scoped_identifier' || func.type === 'scoped_call_expression') {
           // Scoped call: Module::function()
           calleeName = getNodeText(func, this.source);
+          calleeText = calleeName;
         } else {
           calleeName = getNodeText(func, this.source);
+          calleeText = calleeName;
         }
       }
     }
 
     if (calleeName) {
+      const optional = getNodeText(node, this.source).includes('?.') ? true : undefined;
       this.unresolvedReferences.push({
         fromNodeId: callerId,
         referenceName: calleeName,
         referenceKind: 'calls',
         line: node.startPosition.row + 1,
         column: node.startPosition.column,
+        metadata: createReferenceMetadata(sourceEvidence, node, {
+          referenceName: calleeName,
+          referenceKind: 'calls',
+          calleeText: calleeText || calleeName,
+          receiverText,
+          propertyText,
+          isComputed,
+          isOptional: optional,
+          argumentCount: countArguments(node),
+          filePath: this.filePath,
+          language: this.language,
+        }),
       });
     }
   }
@@ -1529,6 +1611,14 @@ export class TreeSitterExtractor {
         referenceKind: 'instantiates',
         line: node.startPosition.row + 1,
         column: node.startPosition.column,
+        metadata: createReferenceMetadata('constructor-call', node, {
+          referenceName: className,
+          referenceKind: 'instantiates',
+          calleeText: className,
+          argumentCount: countArguments(node),
+          filePath: this.filePath,
+          language: this.language,
+        }),
       });
     }
   }
@@ -1593,6 +1683,13 @@ export class TreeSitterExtractor {
         referenceKind: 'decorates',
         line: n.startPosition.row + 1,
         column: n.startPosition.column,
+        metadata: createReferenceMetadata('decorator', n, {
+          referenceName: name,
+          referenceKind: 'decorates',
+          calleeText: getNodeText(target, this.source),
+          filePath: this.filePath,
+          language: this.language,
+        }),
       });
     };
 
@@ -1673,6 +1770,13 @@ export class TreeSitterExtractor {
               referenceKind: 'calls',
               line: node.startPosition.row + 1,
               column: node.startPosition.column,
+              metadata: createReferenceMetadata('bare-call', node, {
+                referenceName: calleeName,
+                referenceKind: 'calls',
+                calleeText: calleeName,
+                filePath: this.filePath,
+                language: this.language,
+              }),
             });
           }
         }

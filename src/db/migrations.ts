@@ -9,7 +9,7 @@ import { SqliteDatabase } from './sqlite-adapter';
 /**
  * Current schema version
  */
-export const CURRENT_SCHEMA_VERSION = 4;
+export const CURRENT_SCHEMA_VERSION = 5;
 
 /**
  * Migration definition
@@ -62,6 +62,15 @@ const migrations: Migration[] = [
       db.exec(`
         DROP INDEX IF EXISTS idx_edges_source;
         DROP INDEX IF EXISTS idx_edges_target;
+      `);
+    },
+  },
+  {
+    version: 5,
+    description: 'Add unresolved reference metadata carrier for extraction evidence',
+    up: (db) => {
+      db.exec(`
+        ALTER TABLE unresolved_refs ADD COLUMN metadata TEXT DEFAULT NULL;
       `);
     },
   },

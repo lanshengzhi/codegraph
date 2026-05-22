@@ -11,6 +11,8 @@ describe('CodeGraph instructions', () => {
     expect(SERVER_INSTRUCTIONS).toContain('nodeId');
     expect(SERVER_INSTRUCTIONS).toContain('file:line');
     expect(SERVER_INSTRUCTIONS).toContain('edge evidence');
+    expect(SERVER_INSTRUCTIONS).toContain('direct-call');
+    expect(SERVER_INSTRUCTIONS).toContain('property-call');
     expect(SERVER_INSTRUCTIONS).toContain('boundary');
   });
 
@@ -19,6 +21,8 @@ describe('CodeGraph instructions', () => {
     expect(INSTRUCTIONS_TEMPLATE).toContain('nodeId');
     expect(INSTRUCTIONS_TEMPLATE).toContain('file:line');
     expect(INSTRUCTIONS_TEMPLATE).toContain('edge evidence');
+    expect(INSTRUCTIONS_TEMPLATE).toContain('direct-call');
+    expect(INSTRUCTIONS_TEMPLATE).toContain('property-call');
     expect(INSTRUCTIONS_TEMPLATE).toContain('boundary');
   });
 });

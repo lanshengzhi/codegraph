@@ -4,7 +4,7 @@
  * Types for the reference resolution system.
  */
 
-import { EdgeKind, Language, Node } from '../types';
+import { EdgeKind, Language, Node, ReferenceMetadata } from '../types';
 
 /**
  * An unresolved reference from extraction
@@ -26,6 +26,8 @@ export interface UnresolvedRef {
   language: Language;
   /** Possible qualified names it might resolve to */
   candidates?: string[];
+  /** Conservative source-level metadata captured during extraction. */
+  metadata?: ReferenceMetadata;
 }
 
 /**

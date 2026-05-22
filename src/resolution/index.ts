@@ -378,6 +378,7 @@ export class ReferenceResolver {
       column: ref.column,
       filePath: ref.filePath || this.getFilePathFromNodeId(ref.fromNodeId),
       language: ref.language || this.getLanguageFromNodeId(ref.fromNodeId),
+      metadata: ref.metadata,
     }));
 
     const total = refs.length;
@@ -559,16 +560,33 @@ export class ReferenceResolver {
         }
       }
 
+      const sourceMetadata = ref.original.metadata;
+      const edgeMetadata: Record<string, unknown> = {
+        confidence: ref.confidence,
+        resolvedBy: ref.resolvedBy,
+        referenceName: ref.original.referenceName,
+        referenceKind: ref.original.referenceKind,
+        sourceEvidence: sourceMetadata?.sourceEvidence ?? 'not-recorded',
+        calleeText: sourceMetadata?.calleeText,
+        receiverText: sourceMetadata?.receiverText,
+        propertyText: sourceMetadata?.propertyText,
+        expressionKind: sourceMetadata?.expressionKind,
+        isComputed: sourceMetadata?.isComputed,
+        isOptional: sourceMetadata?.isOptional,
+        argumentCount: sourceMetadata?.argumentCount,
+        framework: sourceMetadata?.framework,
+      };
+      if (kind !== ref.original.referenceKind) {
+        edgeMetadata.promotedFrom = ref.original.referenceKind;
+      }
+
       return {
         source: ref.original.fromNodeId,
         target: ref.targetNodeId,
         kind,
         line: ref.original.line,
         column: ref.original.column,
-        metadata: {
-          confidence: ref.confidence,
-          resolvedBy: ref.resolvedBy,
-        },
+        metadata: edgeMetadata,
       };
     });
   }
