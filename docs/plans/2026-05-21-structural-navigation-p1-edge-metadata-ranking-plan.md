@@ -3,7 +3,7 @@
 > 关联设计：[`docs/codegraph-structural-navigation-usability-design.md`](../codegraph-structural-navigation-usability-design.md)  
 > 拆解路线图：[`2026-05-21-structural-navigation-roadmap.md`](./2026-05-21-structural-navigation-roadmap.md)  
 > 前置计划：[`2026-05-21-structural-navigation-p0-output-plan.md`](./2026-05-21-structural-navigation-p0-output-plan.md)、[`2026-05-21-structural-navigation-p0b-dynamic-boundary-plan.md`](./2026-05-21-structural-navigation-p0b-dynamic-boundary-plan.md)  
-> 状态：P1a implemented / validated (2026-05-22); P1b/P1c planned  
+> 状态：P1a/P1b implemented / validated / review-passed (2026-05-22); P1c planned
 > 范围：为 resolved edge 保留可审计来源信号，并让 trace / context / explore 的排序理由透明；不做完整控制流、完整 alias/dataflow 或 registry runtime branch 判定。
 
 ---
@@ -30,6 +30,7 @@ P1 范围较大，实施时应拆成三个可独立验收的批次：
   **实施状态（2026-05-22）：已完成并验证。**
 - **P1b：trace ranking 与 ranking reason**  
   在 P1a metadata 可用后，实现 path over-collection、top-K state retention、ranking score/reason 和 MCP path header。
+  **实施状态（2026-05-22）：已完成并验证。**
 - **P1c：context / explore relevance reason**  
   最小化暴露已有搜索/图邻近/penalty 信号；context 覆盖 entry/node reason，explore 首版只覆盖 file reason。若 reason carrier 牵动过大，可作为后续独立 PR。
 
@@ -907,9 +908,11 @@ export function entry(provider: Provider): void {
 
 ### P1b：trace ranking 与 ranking reason
 
-6. **Trace over-collection**：candidatePathLimit 与 per-node top-K candidate states，避免 BFS 早停/剪枝丢候选。
-7. **Trace ranking**：ranking signals、path labels、reason、sort；保持 `confidence` 与 `ranking.score` 分离。
-8. **P1b instructions / CHANGELOG**：必须同步 agent-facing instructions，说明 static score/reason 不是 runtime proof；发布前补 CHANGELOG。
+**状态：implemented / validated / review-passed (2026-05-22)。**
+
+6. ✅ **Trace over-collection**：已实现 candidatePathLimit 与 per-node top-K candidate states，避免 BFS 早停/剪枝丢候选；review follow-up 已覆盖 bounded top complete paths、stale queued state skip、same-node-path edge-evidence keying 与 visited-cap caveat。
+7. ✅ **Trace ranking**：已实现 ranking signals、path labels、reason、sort；`confidence` 与 `ranking.score` 保持分离。
+8. ✅ **P1b instructions / CHANGELOG**：已同步 agent-facing instructions 与 CHANGELOG，说明 static score/reason 不是 runtime proof。
 
 ### P1c：context / explore relevance reason
 
@@ -964,14 +967,14 @@ P1 完成时至少满足：
 - [x] resolved edge metadata 包含 `referenceName`、`referenceKind`、`sourceEvidence`、confidence、resolvedBy。_P1a 已完成。_
 - [x] `codegraph_trace` edge line 展示 recorded `evidence=`；无 source evidence 或 `sourceEvidence='not-recorded'` 但有 resolver metadata 时显示 `evidence=name-match|framework|fuzzy`；完全缺失时才是 `not-recorded`。_P1a 已完成。_
 - [x] `codegraph_callers` / `codegraph_callees` 展示同样 edge evidence。_P1a 已完成。_
-- [ ] trace 搜索 over-collects candidate paths，并用 per-node top-K state retention 避免 `bestDepth` 单纯按深度剪掉更优路径。_P1b。_
-- [ ] trace path 有 structured ranking signals/reasons；多路径排序考虑 direct-call ratio、edge confidence、optional branch、test/fixture/generated penalty；direct/property call counts 基于 `sourceEvidence`，不是 `edge.kind === 'calls'`。_P1b。_
-- [ ] `TracePath.confidence` 与 `TracePath.ranking.score` 分离；MCP 输出 `ranking.score` 时称为 static score。_P1b。_
-- [ ] trace 输出显式说明 static ranking only / not runtime proof。_P1b。_
+- [x] trace 搜索 over-collects candidate paths，并用 per-node top-K state retention 避免 `bestDepth` 单纯按深度剪掉更优路径。_P1b 已完成。_
+- [x] trace path 有 structured ranking signals/reasons；多路径排序考虑 direct-call ratio、edge confidence、optional branch、test/fixture/generated penalty；direct/property call counts 基于 `sourceEvidence`，不是 `edge.kind === 'calls'`。_P1b 已完成。_
+- [x] `TracePath.confidence` 与 `TracePath.ranking.score` 分离；MCP 输出 `ranking.score` 时称为 static score。_P1b 已完成。_
+- [x] trace 输出显式说明 static ranking only / not runtime proof。_P1b 已完成。_
 - [ ] `codegraph_context` entry point 输出 reason 或 `reason: not recorded`，import/export resolved to definition 时 reason 被转移并追加 signal（P1c，可不阻塞 P1a/P1b）。
 - [ ] `codegraph_explore` 文件输出 reason 或 `reason: not recorded`；per-symbol reason 不属于 P1c 首版（P1c，可不阻塞 P1a/P1b）。
 - [x] P1a 对应用户可见输出变更已同步 `src/mcp/server-instructions.ts`、`src/installer/instructions-template.ts`，并更新 instructions tests；仓库中不存在 `.cursor/rules/codegraph.mdc`。_P1b/P1c 后续若改变输出仍需再次同步。_
-- [ ] 输出 reason 不声称 runtime main path。_P1b/P1c。_
+- [x] P1b trace 输出 reason 不声称 runtime main path；P1c context/explore reason 待实现后仍需遵守。_P1b 已完成，P1c 待办。_
 - [x] 不引入完整 control-flow/dataflow/alias/registry runtime 判定。_P1a 已遵守。_
 
 ---

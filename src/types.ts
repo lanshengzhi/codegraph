@@ -354,14 +354,46 @@ export interface TraceStep {
   via?: TraceEdge;
 }
 
+export type TracePathLabel =
+  | 'higher-ranked-static-candidate'
+  | 'alternate-static-candidate'
+  | 'optional-branch'
+  | 'low-evidence';
+
+export interface TracePathRanking {
+  /** Static ranking score used for sorting. Not runtime probability. */
+  score: number;
+  label: TracePathLabel;
+  signals: {
+    edgeCount: number;
+    directCallCount: number;
+    propertyCallCount: number;
+    directCallRatio: number;
+    averageConfidence?: number;
+    lowEvidenceCount: number;
+    frameworkEdgeCount: number;
+    metadataMissingCount: number;
+    scopeMatchCount: number;
+    testOrFixtureNodeCount: number;
+    generatedNodeCount: number;
+    optionalKeywordCount: number;
+  };
+  reasons: string[];
+  penalties: string[];
+}
+
 /**
  * Candidate path returned by trace.
  */
 export interface TracePath {
   steps: TraceStep[];
   edges: TraceEdge[];
+  /** Aggregate static edge confidence. Separate from ranking.score. */
   confidence: number;
+  /** Backward-compatible compact explanation. Prefer ranking for structured signals. */
   reason: string;
+  /** Static ranking explanation used to sort trace candidates. Not runtime probability. */
+  ranking: TracePathRanking;
 }
 
 export type TraceBoundaryType =

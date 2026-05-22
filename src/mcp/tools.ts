@@ -513,7 +513,7 @@ export const tools: ToolDefinition[] = [
   },
   {
     name: 'codegraph_trace',
-    description: 'Trace likely static graph paths from an entry locator to a target symbol/query/locator. Returns ordered path steps with nodeId/range handles, edge kinds, callsite lines when available, gaps, and recommended next inspections. This is guidance over the indexed graph, not runtime proof.',
+    description: 'Trace likely static graph paths from an entry locator to a target symbol/query/locator. Returns ranked path steps with nodeId/range handles, static score/reason, edge kinds, callsite lines when available, gaps, and recommended next inspections. This is guidance over the indexed graph, not runtime proof.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -2225,8 +2225,18 @@ export class ToolHandler {
 
     for (let i = 0; i < result.paths.length; i++) {
       const path = result.paths[i]!;
-      lines.push(`### Path ${i + 1} (confidence ${path.confidence.toFixed(2)})`);
-      lines.push(path.reason);
+      const ranking = path.ranking;
+      if (ranking) {
+        lines.push(`### Path ${i + 1} — ${ranking.label} (static score ${ranking.score.toFixed(2)}, edge confidence ${path.confidence.toFixed(2)})`);
+        lines.push(`Reason: ${this.formatTraceRankingReasons(path)}`);
+        if (ranking.penalties.length > 0) {
+          lines.push(`Penalties: ${this.formatTraceRankingPenalties(path)}`);
+        }
+        lines.push(`Caveat: ${this.formatTraceRankingCaveat(path)}`);
+      } else {
+        lines.push(`### Path ${i + 1} (confidence ${path.confidence.toFixed(2)})`);
+        lines.push(path.reason);
+      }
       lines.push('');
 
       for (let stepIndex = 0; stepIndex < path.steps.length; stepIndex++) {
@@ -2261,6 +2271,32 @@ export class ToolHandler {
 
     lines.push('', `> ${result.completenessNote}`);
     return lines.join('\n');
+  }
+
+  private formatTraceRankingReasons(path: TraceResult['paths'][number]): string {
+    const reasons = path.ranking?.reasons ?? [];
+    const text = reasons.length > 0 ? reasons.slice(0, 5).join('; ') : path.reason;
+    return this.compactTraceRankingText(text || 'not recorded');
+  }
+
+  private formatTraceRankingPenalties(path: TraceResult['paths'][number]): string {
+    const penalties = path.ranking?.penalties ?? [];
+    return this.compactTraceRankingText(penalties.length > 0 ? penalties.slice(0, 5).join('; ') : 'none');
+  }
+
+  private formatTraceRankingCaveat(path: TraceResult['paths'][number]): string {
+    if (path.ranking?.label === 'optional-branch') {
+      return 'Static path exists; inspect guards/source before treating it as the normal runtime path.';
+    }
+    if (path.ranking?.label === 'low-evidence') {
+      return 'Static path exists, but low-evidence or missing metadata means source inspection is required before relying on it.';
+    }
+    return 'Static ranking only, not runtime main-path proof.';
+  }
+
+  private compactTraceRankingText(text: string): string {
+    const cleaned = text.replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim();
+    return cleaned.length > 220 ? `${cleaned.slice(0, 220)}…` : cleaned;
   }
 
   private formatTraceBoundaries(boundaries: TraceBoundary[]): string[] {

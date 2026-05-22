@@ -9,16 +9,35 @@ import {
   TraceEdge,
   TraceOptions,
   TracePath,
+  TracePathRanking,
 } from '../types';
 import { QueryBuilder } from '../db/queries';
 import { normalizeLocatorPath, toNodeHandle } from '../addressability/format';
+import { isTestFile } from '../search/query-utils';
 
 const DEFAULT_EDGE_KINDS: EdgeKind[] = ['calls', 'references', 'imports'];
 const DEFAULT_MAX_DEPTH = 6;
 const DEFAULT_MAX_PATHS = 5;
 const DEFAULT_VISITED_CAP = 1000;
 const DEFAULT_BOUNDARY_CAP = 5;
+const CANDIDATE_PATH_OVERCOLLECT_FACTOR = 5;
+const MIN_CANDIDATE_PATH_LIMIT = 10;
+const MAX_CANDIDATE_PATH_LIMIT = 100;
+const PER_NODE_STATE_LIMIT = 3;
 const REFERENCE_SOURCE_EVIDENCE_SET: ReadonlySet<string> = new Set(REFERENCE_SOURCE_EVIDENCE_VALUES);
+const OPTIONAL_BRANCH_KEYWORDS = [
+  'compact',
+  'compaction',
+  'preflight',
+  'retry',
+  'cleanup',
+  'fallback',
+  'error',
+  'recover',
+  'rollback',
+  'teardown',
+  'dispose',
+] as const;
 
 interface InternalStep {
   node: Node;
@@ -29,6 +48,24 @@ interface QueueItem {
   node: Node;
   steps: InternalStep[];
   depth: number;
+  pathKey: string;
+}
+
+interface RankingContext {
+  skipNonProductionPenalty: boolean;
+  scopePath: string;
+}
+
+interface CandidateStateSummary {
+  pathKey: string;
+  depth: number;
+  score: number;
+  confidence: number;
+  lowEvidenceCount: number;
+  optionalKeywordCount: number;
+  testOrFixtureNodeCount: number;
+  generatedNodeCount: number;
+  metadataMissingCount: number;
 }
 
 export interface TraceSearchResult {
@@ -59,18 +96,25 @@ export class GraphTracer {
     }
 
     const targetIds = new Set(filteredTargets.map((n) => n.id));
-    const queue: QueueItem[] = [{ node: from, steps: [{ node: from, edge: null }], depth: 0 }];
-    const bestDepth = new Map<string, number>([[from.id, 0]]);
+    const rankingContext = this.buildRankingContext(from, filteredTargets, opts);
+    const candidatePathLimit = this.candidatePathLimit(opts.maxPaths);
+    const initialSteps: InternalStep[] = [{ node: from, edge: null }];
+    const initialState = this.summarizeCandidateState(initialSteps, rankingContext);
+    const queue: QueueItem[] = [{ node: from, steps: initialSteps, depth: 0, pathKey: initialState.pathKey }];
+    const statesByNode = new Map<string, CandidateStateSummary[]>([
+      [from.id, [initialState]],
+    ]);
     const paths: TracePath[] = [];
     const frontierBoundaries: TraceBoundary[] = [];
     let visitedCount = 0;
 
-    while (queue.length > 0 && paths.length < opts.maxPaths && visitedCount < DEFAULT_VISITED_CAP) {
+    while (queue.length > 0 && visitedCount < DEFAULT_VISITED_CAP) {
       const item = queue.shift()!;
+      if (!this.isRetainedCandidateState(statesByNode, item.node.id, item.pathKey)) continue;
       visitedCount++;
 
       if (item.depth > 0 && targetIds.has(item.node.id)) {
-        paths.push(this.buildPath(item.steps));
+        this.recordCompletePath(paths, this.buildPath(item.steps, rankingContext), candidatePathLimit);
         continue;
       }
 
@@ -86,6 +130,7 @@ export class GraphTracer {
       adjacent.sort((a, b) => this.edgePriority(a.kind) - this.edgePriority(b.kind));
 
       let enqueued = false;
+      let traversableEdgeSeen = false;
       for (const edge of adjacent) {
         const nextId = this.nextNodeId(item.node.id, edge, opts.direction);
         if (!nextId) continue;
@@ -94,49 +139,52 @@ export class GraphTracer {
         const nextNode = this.queries.getNodeById(nextId);
         if (!nextNode) continue;
         if (!this.nodeAllowed(nextNode, opts)) continue;
+        traversableEdgeSeen = true;
 
         const nextDepth = item.depth + 1;
-        const previousBest = bestDepth.get(nextId);
-        if (previousBest !== undefined && previousBest < nextDepth) continue;
-        bestDepth.set(nextId, nextDepth);
+        const nextSteps = [...item.steps, { node: nextNode, edge }];
+        const state = this.summarizeCandidateState(nextSteps, rankingContext);
+        if (!this.recordCandidateState(statesByNode, nextId, state)) continue;
 
         queue.push({
           node: nextNode,
-          steps: [...item.steps, { node: nextNode, edge }],
+          steps: nextSteps,
           depth: nextDepth,
+          pathKey: state.pathKey,
         });
         enqueued = true;
       }
 
-      if (!enqueued) {
+      if (!enqueued && !traversableEdgeSeen) {
         this.addBoundary(
           frontierBoundaries,
           this.buildFrontierBoundary(
             'dead-end',
             item.steps,
-            'No traversable indexed edge continues from this node. This is an unclassified indexed-graph boundary; dynamic calls may exist in source, but raw call expression shape is not recorded in P0b.'
+            'No traversable indexed edge continues from this node. This is an unclassified indexed-graph boundary; dynamic calls may exist in source, but raw call expression shape may be missing from older edge metadata.'
           )
         );
       }
     }
 
-    paths.sort((a, b) => {
-      if (a.steps.length !== b.steps.length) return a.steps.length - b.steps.length;
-      return b.confidence - a.confidence;
-    });
+    paths.sort((a, b) => this.compareRankedPaths(a, b));
 
     const limitedPaths = paths.slice(0, opts.maxPaths);
+    this.assignPathLabels(limitedPaths);
     const boundaries = limitedPaths.length > 0
       ? this.classifyPathBoundaries(limitedPaths)
       : frontierBoundaries.slice(0, DEFAULT_BOUNDARY_CAP);
+
+    if (visitedCount >= DEFAULT_VISITED_CAP) {
+      gaps.push(paths.length > 0
+        ? `Traversal stopped at visited node cap (${DEFAULT_VISITED_CAP}); ranked paths are best candidates found before the cap, not exhaustive.`
+        : `Traversal stopped at visited node cap (${DEFAULT_VISITED_CAP}).`);
+    }
 
     if (paths.length === 0) {
       gaps.push(
         `No complete path found within maxDepth=${opts.maxDepth} over edgeKinds=${opts.edgeKinds.join(',')}.`
       );
-      if (visitedCount >= DEFAULT_VISITED_CAP) {
-        gaps.push(`Traversal stopped at visited node cap (${DEFAULT_VISITED_CAP}).`);
-      }
       recommendations.push('Try increasing maxDepth, widening edgeKinds, or using codegraph_explore on the returned endpoint handles.');
     }
 
@@ -212,11 +260,17 @@ export class GraphTracer {
     return null;
   }
 
-  private buildPath(steps: InternalStep[]): TracePath {
+  private buildPath(
+    steps: InternalStep[],
+    rankingContext: RankingContext
+  ): TracePath {
     const edges = steps.slice(1).map((step) => this.toTraceEdge(step.edge!));
-    const directCalls = edges.filter((edge) => edge.kind === 'calls').length;
-    const confidence = Math.max(0.1, Math.min(1, 0.45 + directCalls * 0.15 + (edges.length <= 3 ? 0.1 : 0)));
+    const ranking = this.rankTracePath(steps, edges, rankingContext);
+    const confidence = ranking.signals.averageConfidence ?? fallbackPathConfidence(edges);
     const last = steps[steps.length - 1]!.node;
+    const reason = ranking.reasons.length > 0
+      ? ranking.reasons.join('; ')
+      : `Reached target ${last.name} by ${edges.length} static graph edge${edges.length === 1 ? '' : 's'}.`;
 
     return {
       steps: steps.map((step) => ({
@@ -225,8 +279,283 @@ export class GraphTracer {
       })),
       edges,
       confidence,
-      reason: `Reached target ${last.name} by ${edges.length} static graph edge${edges.length === 1 ? '' : 's'}.`,
+      reason,
+      ranking,
     };
+  }
+
+  private buildRankingContext(
+    from: Node,
+    targets: Node[],
+    options: Required<TraceOptions>
+  ): RankingContext {
+    const locatorPaths = [from.filePath, ...targets.map((target) => target.filePath)];
+    if (options.scopePath) locatorPaths.push(options.scopePath);
+    return {
+      skipNonProductionPenalty: locatorPaths.some(isTraceNonProductionOrGeneratedPath),
+      scopePath: normalizeLocatorPath(options.scopePath),
+    };
+  }
+
+  private candidatePathLimit(maxPaths: number): number {
+    return clampNumber(
+      Math.max(maxPaths * CANDIDATE_PATH_OVERCOLLECT_FACTOR, MIN_CANDIDATE_PATH_LIMIT),
+      maxPaths,
+      MAX_CANDIDATE_PATH_LIMIT
+    );
+  }
+
+  private summarizeCandidateState(
+    steps: InternalStep[],
+    rankingContext: RankingContext
+  ): CandidateStateSummary {
+    const edges = steps.slice(1).map((step) => this.toTraceEdge(step.edge!));
+    const ranking = this.rankTracePath(steps, edges, rankingContext);
+    return {
+      pathKey: traceStateKey(steps, edges),
+      depth: steps.length - 1,
+      score: ranking.score,
+      confidence: ranking.signals.averageConfidence ?? fallbackPathConfidence(edges),
+      lowEvidenceCount: ranking.signals.lowEvidenceCount,
+      optionalKeywordCount: ranking.signals.optionalKeywordCount,
+      testOrFixtureNodeCount: ranking.signals.testOrFixtureNodeCount,
+      generatedNodeCount: ranking.signals.generatedNodeCount,
+      metadataMissingCount: ranking.signals.metadataMissingCount,
+    };
+  }
+
+  private recordCandidateState(
+    statesByNode: Map<string, CandidateStateSummary[]>,
+    nodeId: string,
+    state: CandidateStateSummary
+  ): boolean {
+    const existing = statesByNode.get(nodeId) ?? [];
+    if (existing.some((candidate) => candidate.pathKey === state.pathKey)) return false;
+
+    if (existing.length < PER_NODE_STATE_LIMIT) {
+      existing.push(state);
+      existing.sort((a, b) => this.compareCandidateStates(a, b));
+      statesByNode.set(nodeId, existing);
+      return true;
+    }
+
+    const worst = existing[existing.length - 1]!;
+    if (this.compareCandidateStates(state, worst) < 0) {
+      existing[existing.length - 1] = state;
+      existing.sort((a, b) => this.compareCandidateStates(a, b));
+      statesByNode.set(nodeId, existing);
+      return true;
+    }
+
+    return false;
+  }
+
+  private isRetainedCandidateState(
+    statesByNode: Map<string, CandidateStateSummary[]>,
+    nodeId: string,
+    pathKey: string
+  ): boolean {
+    return (statesByNode.get(nodeId) ?? []).some((state) => state.pathKey === pathKey);
+  }
+
+  private recordCompletePath(paths: TracePath[], path: TracePath, limit: number): void {
+    const key = tracePathEvidenceKey(path);
+    const existingIndex = paths.findIndex((candidate) => tracePathEvidenceKey(candidate) === key);
+    if (existingIndex >= 0) {
+      if (this.compareRankedPaths(path, paths[existingIndex]!) < 0) {
+        paths[existingIndex] = path;
+        paths.sort((a, b) => this.compareRankedPaths(a, b));
+      }
+      return;
+    }
+
+    if (paths.length < limit) {
+      paths.push(path);
+      paths.sort((a, b) => this.compareRankedPaths(a, b));
+      return;
+    }
+
+    const worst = paths[paths.length - 1];
+    if (worst && this.compareRankedPaths(path, worst) < 0) {
+      paths[paths.length - 1] = path;
+      paths.sort((a, b) => this.compareRankedPaths(a, b));
+    }
+  }
+
+  private compareCandidateStates(a: CandidateStateSummary, b: CandidateStateSummary): number {
+    if (Math.abs(a.score - b.score) > 0.000001) return b.score - a.score;
+    if (a.depth !== b.depth) return a.depth - b.depth;
+    if (Math.abs(a.confidence - b.confidence) > 0.000001) return b.confidence - a.confidence;
+    if (a.lowEvidenceCount !== b.lowEvidenceCount) return a.lowEvidenceCount - b.lowEvidenceCount;
+    if (a.optionalKeywordCount !== b.optionalKeywordCount) return a.optionalKeywordCount - b.optionalKeywordCount;
+    if (a.testOrFixtureNodeCount !== b.testOrFixtureNodeCount) return a.testOrFixtureNodeCount - b.testOrFixtureNodeCount;
+    if (a.generatedNodeCount !== b.generatedNodeCount) return a.generatedNodeCount - b.generatedNodeCount;
+    if (a.metadataMissingCount !== b.metadataMissingCount) return a.metadataMissingCount - b.metadataMissingCount;
+    return a.pathKey.localeCompare(b.pathKey);
+  }
+
+  private rankTracePath(
+    steps: InternalStep[],
+    edges: TraceEdge[],
+    rankingContext: RankingContext
+  ): TracePathRanking {
+    const nodes = steps.map((step) => step.node);
+    const edgeCount = edges.length;
+    const directCallCount = edges.filter((edge) => edge.sourceEvidence === 'direct-call').length;
+    const propertyCallCount = edges.filter((edge) => edge.sourceEvidence === 'property-call').length;
+    const directCallRatio = edgeCount > 0 ? directCallCount / edgeCount : 0;
+    const confidenceValues = edges
+      .map((edge) => edge.confidence)
+      .filter((confidence): confidence is number => typeof confidence === 'number' && Number.isFinite(confidence));
+    const averageConfidence = confidenceValues.length > 0
+      ? confidenceValues.reduce((sum, confidence) => sum + confidence, 0) / confidenceValues.length
+      : undefined;
+    const lowEvidenceCount = edges.filter((edge) => isLowEvidenceEdge(edge)).length;
+    const frameworkEdgeCount = edges.filter((edge) => edge.resolvedBy === 'framework' || Boolean(edge.framework)).length;
+    const metadataMissingCount = edges.filter((edge) => !hasRecordedSourceEvidence(edge)).length;
+    const scopeMatchCount = rankingContext.scopePath
+      ? nodes.filter((node) => pathMatches(normalizeLocatorPath(node.filePath), rankingContext.scopePath)).length
+      : 0;
+    const testOrFixtureNodeCount = nodes.filter((node) => isTraceTestOrFixturePath(node.filePath)).length;
+    const generatedNodeCount = nodes.filter((node) => isGeneratedFilePath(node.filePath)).length;
+    const optionalKeywordMatches = this.optionalKeywordMatches(nodes, edges);
+    const optionalKeywordCount = optionalKeywordMatches.length;
+    const scopeMatchRatio = rankingContext.scopePath && nodes.length > 0 ? scopeMatchCount / nodes.length : 0;
+    const testPenaltyCount = rankingContext.skipNonProductionPenalty ? 0 : testOrFixtureNodeCount;
+    const generatedPenaltyCount = rankingContext.skipNonProductionPenalty ? 0 : generatedNodeCount;
+
+    const score = Number((
+      1.0 +
+      directCallRatio * 0.4 +
+      (averageConfidence ?? 0) * 0.3 +
+      scopeMatchRatio * 0.15 -
+      edgeCount * 0.03 -
+      propertyCallCount * 0.04 -
+      lowEvidenceCount * 0.15 -
+      metadataMissingCount * 0.08 -
+      frameworkEdgeCount * 0.05 -
+      testPenaltyCount * 0.2 -
+      generatedPenaltyCount * 0.2 -
+      optionalKeywordCount * 0.15
+    ).toFixed(4));
+
+    const reasons: string[] = [
+      `direct-call ratio ${directCallRatio.toFixed(2)}`,
+    ];
+    if (averageConfidence !== undefined) {
+      reasons.push(`average edge confidence ${averageConfidence.toFixed(2)}`);
+    } else {
+      reasons.push('edge confidence not recorded');
+    }
+    if (rankingContext.scopePath && scopeMatchCount === nodes.length) {
+      reasons.push('stays in requested scope');
+    } else if (rankingContext.scopePath && scopeMatchCount > 0) {
+      reasons.push(`partially matches requested scope (${scopeMatchCount}/${nodes.length} nodes)`);
+    }
+    if (optionalKeywordMatches.length > 0) {
+      reasons.push(`includes optional/preflight keywords: ${optionalKeywordMatches.slice(0, 5).join(', ')}`);
+    }
+    if (lowEvidenceCount > 0) {
+      reasons.push(`${lowEvidenceCount} low-evidence edge${lowEvidenceCount === 1 ? '' : 's'}`);
+    }
+    if (metadataMissingCount > 0) {
+      reasons.push(`${metadataMissingCount} edge${metadataMissingCount === 1 ? '' : 's'} missing source evidence`);
+    }
+    if (rankingContext.skipNonProductionPenalty && (testOrFixtureNodeCount > 0 || generatedNodeCount > 0)) {
+      reasons.push('test/fixture/generated path allowed by trace locator');
+    }
+    if (optionalKeywordMatches.length === 0 && testPenaltyCount === 0 && generatedPenaltyCount === 0) {
+      reasons.push('no optional/test/generated penalties');
+    }
+
+    const penalties: string[] = [];
+    if (propertyCallCount > 0) penalties.push('property-call receiver binding penalty');
+    if (lowEvidenceCount > 0) {
+      penalties.push(edges.some((edge) => edge.resolvedBy === 'fuzzy')
+        ? 'low evidence / fuzzy resolver penalty'
+        : 'low evidence resolver penalty');
+    }
+    if (metadataMissingCount > 0) penalties.push('metadata missing penalty');
+    if (frameworkEdgeCount > 0) penalties.push('framework edge penalty');
+    if (optionalKeywordMatches.length > 0) {
+      penalties.push(`optional-branch keyword penalty: ${optionalKeywordMatches.slice(0, 5).join(', ')}`);
+    }
+    if (testPenaltyCount > 0) penalties.push('test/fixture/example path penalty');
+    if (generatedPenaltyCount > 0) penalties.push('generated path penalty');
+    if (edgeCount > 2) penalties.push('longer path penalty');
+
+    const allEdgesLackResolverMetadata = edgeCount > 0 && edges.every((edge) =>
+      !hasRecordedSourceEvidence(edge) && edge.confidence === undefined && edge.resolvedBy === undefined
+    );
+    const label = optionalKeywordCount > 0
+      ? 'optional-branch'
+      : (lowEvidenceCount > 0 || allEdgesLackResolverMetadata ? 'low-evidence' : 'alternate-static-candidate');
+
+    return {
+      score,
+      label,
+      signals: {
+        edgeCount,
+        directCallCount,
+        propertyCallCount,
+        directCallRatio,
+        averageConfidence,
+        lowEvidenceCount,
+        frameworkEdgeCount,
+        metadataMissingCount,
+        scopeMatchCount,
+        testOrFixtureNodeCount,
+        generatedNodeCount,
+        optionalKeywordCount,
+      },
+      reasons,
+      penalties,
+    };
+  }
+
+  private optionalKeywordMatches(nodes: Node[], edges: TraceEdge[]): string[] {
+    const matches = new Set<string>();
+    const candidates: string[] = [];
+
+    for (const node of nodes) {
+      candidates.push(node.name);
+    }
+    for (const edge of edges) {
+      if (edge.referenceName) candidates.push(edge.referenceName);
+      if (edge.calleeText) candidates.push(edge.calleeText);
+      if (edge.propertyText) candidates.push(edge.propertyText);
+    }
+
+    for (const candidate of candidates) {
+      const lower = candidate.toLowerCase();
+      if (OPTIONAL_BRANCH_KEYWORDS.some((keyword) => lower.includes(keyword))) {
+        matches.add(shortSignalText(candidate));
+      }
+    }
+
+    return [...matches];
+  }
+
+  private compareRankedPaths(a: TracePath, b: TracePath): number {
+    if (Math.abs(a.ranking.score - b.ranking.score) > 0.000001) {
+      return b.ranking.score - a.ranking.score;
+    }
+    if (a.edges.length !== b.edges.length) return a.edges.length - b.edges.length;
+    const aConfidence = a.ranking.signals.averageConfidence ?? a.confidence;
+    const bConfidence = b.ranking.signals.averageConfidence ?? b.confidence;
+    if (Math.abs(aConfidence - bConfidence) > 0.000001) return bConfidence - aConfidence;
+    return tracePathSortKey(a).localeCompare(tracePathSortKey(b));
+  }
+
+  private assignPathLabels(paths: TracePath[]): void {
+    for (let i = 0; i < paths.length; i++) {
+      const path = paths[i]!;
+      if (path.ranking.label === 'optional-branch' || path.ranking.label === 'low-evidence') continue;
+      path.ranking = {
+        ...path.ranking,
+        label: i === 0 ? 'higher-ranked-static-candidate' : 'alternate-static-candidate',
+      };
+    }
   }
 
   private buildFrontierBoundary(type: 'max-depth' | 'dead-end', steps: InternalStep[], reason: string): TraceBoundary {
@@ -391,6 +720,96 @@ function readSourceEvidence(metadata: Record<string, unknown> | undefined): Refe
   return typeof value === 'string' && REFERENCE_SOURCE_EVIDENCE_SET.has(value)
     ? value as ReferenceSourceEvidence
     : undefined;
+}
+
+function fallbackPathConfidence(edges: TraceEdge[]): number {
+  const recorded = edges
+    .map((edge) => edge.confidence)
+    .filter((confidence): confidence is number => typeof confidence === 'number' && Number.isFinite(confidence));
+  if (recorded.length > 0) {
+    return Math.max(0.1, Math.min(1, recorded.reduce((sum, confidence) => sum + confidence, 0) / recorded.length));
+  }
+
+  const directCalls = edges.filter((edge) => edge.sourceEvidence === 'direct-call').length;
+  return Math.max(0.1, Math.min(1, 0.45 + directCalls * 0.15 + (edges.length <= 3 ? 0.1 : 0)));
+}
+
+function hasRecordedSourceEvidence(edge: TraceEdge): boolean {
+  return edge.sourceEvidence !== undefined && edge.sourceEvidence !== 'not-recorded';
+}
+
+function isLowEvidenceEdge(edge: TraceEdge): boolean {
+  if (edge.resolvedBy === 'framework' || edge.resolvedBy === 'fuzzy') return true;
+  if (edge.confidence !== undefined && edge.confidence < 0.8) return true;
+  if (edge.resolvedBy === 'instance-method' && (edge.confidence === undefined || edge.confidence < 0.8)) return true;
+  return false;
+}
+
+function isTraceNonProductionOrGeneratedPath(filePath: string): boolean {
+  return isTraceTestOrFixturePath(filePath) || isGeneratedFilePath(filePath);
+}
+
+function isTraceTestOrFixturePath(filePath: string): boolean {
+  const normalizedPath = normalizeLocatorPath(filePath);
+  const normalized = normalizedPath.toLowerCase();
+  if (!normalized) return false;
+  if (isTestFile(normalizedPath)) return true;
+  return /(^|\/)(__tests__|tests?|specs?|fixtures?|examples?|samples?|demos?|benchmarks?|integration)(\/|$)/.test(normalized);
+}
+
+function isGeneratedFilePath(filePath: string): boolean {
+  const normalized = normalizeLocatorPath(filePath).toLowerCase();
+  if (!normalized) return false;
+  return (
+    /(^|\/)(__generated__|generated|gen)(\/|$)/.test(normalized) ||
+    /(^|[._-])(generated|autogenerated)\.[a-z0-9]+$/.test(normalized)
+  );
+}
+
+function shortSignalText(value: string): string {
+  const cleaned = value.replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return cleaned.length > 80 ? cleaned.slice(0, 80) : cleaned;
+}
+
+function tracePathSortKey(path: TracePath): string {
+  const last = path.steps[path.steps.length - 1]?.node;
+  return last ? `${last.path}:${last.startLine}:${last.name}` : '';
+}
+
+function traceStateKey(steps: InternalStep[], edges: TraceEdge[]): string {
+  const parts: unknown[] = [steps[0]?.node.id ?? ''];
+  for (let i = 1; i < steps.length; i++) {
+    parts.push(traceEdgeEvidenceKey(edges[i - 1]!), steps[i]!.node.id);
+  }
+  return JSON.stringify(parts);
+}
+
+function tracePathEvidenceKey(path: TracePath): string {
+  const parts: unknown[] = [path.steps[0]?.node.nodeId ?? ''];
+  for (let i = 1; i < path.steps.length; i++) {
+    parts.push(traceEdgeEvidenceKey(path.edges[i - 1]!), path.steps[i]!.node.nodeId);
+  }
+  return JSON.stringify(parts);
+}
+
+function traceEdgeEvidenceKey(edge: TraceEdge): unknown[] {
+  return [
+    edge.sourceNodeId,
+    edge.targetNodeId,
+    edge.kind,
+    edge.line ?? null,
+    edge.column ?? null,
+    edge.provenance ?? null,
+    edge.referenceName ?? null,
+    edge.referenceKind ?? null,
+    edge.sourceEvidence ?? null,
+    edge.resolvedBy ?? null,
+    edge.confidence ?? null,
+    edge.calleeText ?? null,
+    edge.receiverText ?? null,
+    edge.propertyText ?? null,
+    edge.framework ?? null,
+  ];
 }
 
 function clampNumber(value: number, min: number, max: number): number {

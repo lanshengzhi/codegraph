@@ -14,6 +14,8 @@ describe('CodeGraph instructions', () => {
     expect(SERVER_INSTRUCTIONS).toContain('direct-call');
     expect(SERVER_INSTRUCTIONS).toContain('property-call');
     expect(SERVER_INSTRUCTIONS).toContain('boundary');
+    expect(SERVER_INSTRUCTIONS).toContain('static score');
+    expect(SERVER_INSTRUCTIONS).toContain('not runtime main-path proof');
   });
 
   it('mentions trace, precise locators, edge evidence, and boundaries in installed agent instructions', () => {
@@ -24,5 +26,7 @@ describe('CodeGraph instructions', () => {
     expect(INSTRUCTIONS_TEMPLATE).toContain('direct-call');
     expect(INSTRUCTIONS_TEMPLATE).toContain('property-call');
     expect(INSTRUCTIONS_TEMPLATE).toContain('boundary');
+    expect(INSTRUCTIONS_TEMPLATE).toContain('static score');
+    expect(INSTRUCTIONS_TEMPLATE).toContain('not runtime main-path proof');
   });
 });

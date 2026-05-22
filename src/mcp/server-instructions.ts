@@ -45,7 +45,7 @@ of calls; a grep/read exploration is dozens.
 - **"What does this call?"** → \`codegraph_callees\` (includes edge evidence/callsite when recorded, e.g. \`direct-call\`, \`property-call\`, \`constructor-call\`, \`import\`, \`decorator\`, \`bare-call\`, or resolver fallback)
 - **"What would changing this break?"** → \`codegraph_impact\`
 - **"Show me this symbol's source / signature / docstring."** → \`codegraph_node\`
-- **"Trace this lifecycle / path from entry to target."** → \`codegraph_trace\` (path-shaped static graph guidance with handles, edge evidence, and boundary/low-evidence caveats; not runtime proof)
+- **"Trace this lifecycle / path from entry to target."** → \`codegraph_trace\` (path-shaped static graph guidance with handles, edge evidence, static ranking score/reason, and boundary/low-evidence caveats; not runtime proof)
 - **"Show me several related symbols' source / survey an area."** → \`codegraph_explore\` (ONE capped call; prefer over many codegraph_node/Read)
 - **"What's in directory X?"** → \`codegraph_files\`
 - **"Is the index ready / what's its size?"** → \`codegraph_status\`
@@ -69,6 +69,6 @@ of calls; a grep/read exploration is dozens.
 
 - Index lags file writes by ~1 second.
 - Cross-file resolution is best-effort name matching; ambiguous calls may return multiple candidates.
-- Trace/callers/callees edge evidence reflects indexed static edges. When recorded, \`evidence=\` may show source syntax such as \`direct-call\`, \`property-call\`, \`constructor-call\`, \`import\`, \`decorator\`, or \`bare-call\`; otherwise resolver fallback may show \`name-match\`, \`framework\`, or \`fuzzy\`. \`not-recorded\` means the index did not capture that fact, not that runtime behavior is absent. Trace may show boundary / low-evidence entries with exact handles for source inspection.
+- Trace/callers/callees edge evidence reflects indexed static edges. When recorded, \`evidence=\` may show source syntax such as \`direct-call\`, \`property-call\`, \`constructor-call\`, \`import\`, \`decorator\`, or \`bare-call\`; otherwise resolver fallback may show \`name-match\`, \`framework\`, or \`fuzzy\`. \`not-recorded\` means the index did not capture that fact, not that runtime behavior is absent. Trace ranks candidate paths with a static score/reason from recorded evidence (direct-call ratio, edge confidence, scope, low-evidence, optional/test/generated penalties); this is sorting guidance, not runtime main-path proof. Trace may show boundary / low-evidence entries with exact handles for source inspection.
 - No live correctness validation — that's still the TypeScript compiler / test suite / linter's job. Codegraph supplements those with structural context they don't have.
 `;

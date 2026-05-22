@@ -11,7 +11,7 @@ import { ToolHandler } from '../src/mcp/tools';
 import { DatabaseConnection } from '../src/db';
 import { QueryBuilder } from '../src/db/queries';
 import { GraphTracer } from '../src/graph/trace';
-import type { Edge, Node } from '../src/types';
+import type { Edge, EdgeKind, Node } from '../src/types';
 
 beforeAll(async () => {
   await initGrammars();
@@ -146,13 +146,13 @@ function writeResolvedPropertyTraceFixture(root: string): void {
   );
 }
 
-function makeTraceNode(id: string, name: string, startLine: number): Node {
+function makeTraceNode(id: string, name: string, startLine: number, filePath = 'src/direct.ts'): Node {
   return {
     id,
     kind: 'function',
     name,
     qualifiedName: name,
-    filePath: 'src/direct.ts',
+    filePath,
     language: 'typescript',
     startLine,
     endLine: startLine + 1,
@@ -160,6 +160,30 @@ function makeTraceNode(id: string, name: string, startLine: number): Node {
     endColumn: 1,
     updatedAt: Date.now(),
   };
+}
+
+function insertTraceNodes(queries: QueryBuilder, nodes: Node[]): void {
+  for (const node of nodes) queries.insertNode(node);
+}
+
+function insertTraceEdge(
+  queries: QueryBuilder,
+  source: Node,
+  target: Node,
+  metadata: Record<string, unknown>,
+  kind: EdgeKind = 'calls'
+): void {
+  queries.insertEdge({
+    source: source.id,
+    target: target.id,
+    kind,
+    line: source.startLine + 1,
+    metadata,
+  });
+}
+
+function traceNames(pathResult: { steps: Array<{ node: { name: string } }> }): string[] {
+  return pathResult.steps.map((step) => step.node.name);
 }
 
 describe.skipIf(!HAS_SQLITE)('CodeGraph.trace', () => {
@@ -391,6 +415,227 @@ describe.skipIf(!HAS_SQLITE)('GraphTracer edge evidence boundaries', () => {
   });
 });
 
+describe.skipIf(!HAS_SQLITE)('GraphTracer P1b ranking', () => {
+  function withManualTrace<T>(run: (queries: QueryBuilder) => T): T {
+    const root = tmpRoot();
+    const db = DatabaseConnection.initialize(path.join(root, 'test.db'));
+    const queries = new QueryBuilder(db.getDb());
+    try {
+      return run(queries);
+    } finally {
+      db.close();
+      cleanup(root);
+    }
+  }
+
+  it('ranks high-confidence direct paths above fuzzy low-confidence paths', () => withManualTrace((queries) => {
+    const entry = makeTraceNode('entry', 'entry', 1);
+    const normal = makeTraceNode('normal', 'normal', 5);
+    const fuzzy = makeTraceNode('fuzzy', 'fuzzy', 9);
+    const target = makeTraceNode('target', 'target', 13);
+    insertTraceNodes(queries, [entry, normal, fuzzy, target]);
+    insertTraceEdge(queries, entry, fuzzy, { sourceEvidence: 'direct-call', confidence: 0.5, resolvedBy: 'fuzzy' });
+    insertTraceEdge(queries, fuzzy, target, { sourceEvidence: 'direct-call', confidence: 0.5, resolvedBy: 'fuzzy' });
+    insertTraceEdge(queries, entry, normal, { sourceEvidence: 'direct-call', confidence: 0.9, resolvedBy: 'exact-match' });
+    insertTraceEdge(queries, normal, target, { sourceEvidence: 'direct-call', confidence: 0.9, resolvedBy: 'exact-match' });
+
+    const result = new GraphTracer(queries).trace(entry, [target], { maxDepth: 2, maxPaths: 2, edgeKinds: ['calls'] });
+
+    expect(traceNames(result.paths[0]!)).toEqual(['entry', 'normal', 'target']);
+    expect(result.paths[0]!.ranking.signals.averageConfidence).toBeGreaterThan(result.paths[1]!.ranking.signals.averageConfidence!);
+    expect(result.paths[1]!.ranking.penalties.join(' ')).toMatch(/low evidence|fuzzy/i);
+    expect(result.paths[0]!.confidence).not.toBe(result.paths[0]!.ranking.score);
+  }));
+
+  it('labels optional keyword paths and ranks the normal path first', () => withManualTrace((queries) => {
+    const entry = makeTraceNode('entry', 'entry', 1);
+    const check = makeTraceNode('check', '_checkCompaction', 5);
+    const compact = makeTraceNode('compact', 'compact', 9);
+    const normal = makeTraceNode('normal', 'runAgentLoop', 13);
+    const target = makeTraceNode('target', 'target', 17);
+    insertTraceNodes(queries, [entry, check, compact, normal, target]);
+    insertTraceEdge(queries, entry, check, { sourceEvidence: 'direct-call', confidence: 0.95, resolvedBy: 'exact-match' });
+    insertTraceEdge(queries, check, compact, { sourceEvidence: 'direct-call', confidence: 0.95, resolvedBy: 'exact-match' });
+    insertTraceEdge(queries, compact, target, { sourceEvidence: 'direct-call', confidence: 0.95, resolvedBy: 'exact-match' });
+    insertTraceEdge(queries, entry, normal, { sourceEvidence: 'direct-call', confidence: 0.95, resolvedBy: 'exact-match' });
+    insertTraceEdge(queries, normal, target, { sourceEvidence: 'direct-call', confidence: 0.95, resolvedBy: 'exact-match' });
+
+    const result = new GraphTracer(queries).trace(entry, [target], { maxDepth: 3, maxPaths: 2, edgeKinds: ['calls'] });
+
+    expect(traceNames(result.paths[0]!)).toEqual(['entry', 'runAgentLoop', 'target']);
+    const optionalPath = result.paths.find((pathResult) => traceNames(pathResult).includes('compact'))!;
+    expect(optionalPath.ranking.label).toBe('optional-branch');
+    expect(optionalPath.ranking.penalties.join(' ')).toMatch(/optional-branch keyword penalty.*compact/i);
+    expect(optionalPath.ranking.reasons.join(' ')).toMatch(/_checkCompaction|compact/);
+  }));
+
+  it('applies test fixture penalties only when trace locators are production paths', () => withManualTrace((queries) => {
+    const entry = makeTraceNode('entry', 'entry', 1, 'src/entry.ts');
+    const prod = makeTraceNode('prod', 'prodHelper', 5, 'src/flow.ts');
+    const test = makeTraceNode('test', 'testHelper', 9, 'src/__tests__/flow.test.ts');
+    const target = makeTraceNode('target', 'target', 13, 'src/target.ts');
+    insertTraceNodes(queries, [entry, prod, test, target]);
+    insertTraceEdge(queries, entry, test, { sourceEvidence: 'direct-call', confidence: 0.95, resolvedBy: 'exact-match' });
+    insertTraceEdge(queries, test, target, { sourceEvidence: 'direct-call', confidence: 0.95, resolvedBy: 'exact-match' });
+    insertTraceEdge(queries, entry, prod, { sourceEvidence: 'direct-call', confidence: 0.95, resolvedBy: 'exact-match' });
+    insertTraceEdge(queries, prod, target, { sourceEvidence: 'direct-call', confidence: 0.95, resolvedBy: 'exact-match' });
+
+    const productionTrace = new GraphTracer(queries).trace(entry, [target], { maxDepth: 2, maxPaths: 2, edgeKinds: ['calls'] });
+    expect(traceNames(productionTrace.paths[0]!)).toEqual(['entry', 'prodHelper', 'target']);
+    const testPath = productionTrace.paths.find((pathResult) => traceNames(pathResult).includes('testHelper'))!;
+    expect(testPath.ranking.penalties.join(' ')).toMatch(/test\/fixture\/example path penalty/);
+
+    const testEntry = makeTraceNode('test-entry', 'testEntry', 21, 'src/__tests__/entry.test.ts');
+    const testTarget = makeTraceNode('test-target', 'testTarget', 25, 'src/__tests__/target.test.ts');
+    const testHelper = makeTraceNode('test-helper', 'testOnlyHelper', 29, 'src/__tests__/helper.test.ts');
+    insertTraceNodes(queries, [testEntry, testTarget, testHelper]);
+    insertTraceEdge(queries, testEntry, testHelper, { sourceEvidence: 'direct-call', confidence: 0.95, resolvedBy: 'exact-match' });
+    insertTraceEdge(queries, testHelper, testTarget, { sourceEvidence: 'direct-call', confidence: 0.95, resolvedBy: 'exact-match' });
+
+    const testTrace = new GraphTracer(queries).trace(testEntry, [testTarget], { maxDepth: 2, maxPaths: 1, edgeKinds: ['calls'] });
+    expect(testTrace.paths[0]!.ranking.signals.testOrFixtureNodeCount).toBeGreaterThan(0);
+    expect(testTrace.paths[0]!.ranking.penalties.join(' ')).not.toMatch(/test\/fixture\/example path penalty/);
+    expect(testTrace.paths[0]!.ranking.reasons.join(' ')).toMatch(/allowed by trace locator/);
+  }));
+
+  it('over-collects paths so maxPaths=1 still returns the better later candidate', () => withManualTrace((queries) => {
+    const entry = makeTraceNode('entry', 'entry', 1);
+    const fallback = makeTraceNode('fallback', 'fallbackHandler', 5);
+    const normal = makeTraceNode('normal', 'normalHandler', 9);
+    const target = makeTraceNode('target', 'target', 13);
+    insertTraceNodes(queries, [entry, fallback, normal, target]);
+    insertTraceEdge(queries, entry, fallback, { sourceEvidence: 'direct-call', confidence: 0.4, resolvedBy: 'fuzzy' });
+    insertTraceEdge(queries, fallback, target, { sourceEvidence: 'direct-call', confidence: 0.4, resolvedBy: 'fuzzy' });
+    insertTraceEdge(queries, entry, normal, { sourceEvidence: 'direct-call', confidence: 0.95, resolvedBy: 'exact-match' });
+    insertTraceEdge(queries, normal, target, { sourceEvidence: 'direct-call', confidence: 0.95, resolvedBy: 'exact-match' });
+
+    const result = new GraphTracer(queries).trace(entry, [target], { maxDepth: 2, maxPaths: 1, edgeKinds: ['calls'] });
+
+    expect(result.paths).toHaveLength(1);
+    expect(traceNames(result.paths[0]!)).toEqual(['entry', 'normalHandler', 'target']);
+    expect(result.paths[0]!.ranking.label).toBe('higher-ranked-static-candidate');
+  }));
+
+  it('continues past a low-quality target flood and keeps the best complete path', () => withManualTrace((queries) => {
+    const entry = makeTraceNode('entry', 'entry', 1);
+    const low = makeTraceNode('low', 'lowFloodPath', 5);
+    const high = makeTraceNode('high', 'highConfidencePath', 9);
+    const shared = makeTraceNode('shared', 'shared', 13);
+    const targets = Array.from({ length: 12 }, (_, index) => makeTraceNode(`target${index}`, `target${index}`, 20 + index));
+    insertTraceNodes(queries, [entry, low, high, shared, ...targets]);
+    insertTraceEdge(queries, entry, low, { sourceEvidence: 'direct-call', confidence: 0.4, resolvedBy: 'fuzzy' });
+    insertTraceEdge(queries, low, shared, { sourceEvidence: 'direct-call', confidence: 0.4, resolvedBy: 'fuzzy' });
+    insertTraceEdge(queries, entry, high, { sourceEvidence: 'direct-call', confidence: 0.95, resolvedBy: 'exact-match' });
+    insertTraceEdge(queries, high, shared, { sourceEvidence: 'direct-call', confidence: 0.95, resolvedBy: 'exact-match' });
+    for (const target of targets) {
+      insertTraceEdge(queries, shared, target, { sourceEvidence: 'direct-call', confidence: 0.95, resolvedBy: 'exact-match' });
+    }
+
+    const result = new GraphTracer(queries).trace(entry, targets, { maxDepth: 3, maxPaths: 1, edgeKinds: ['calls'] });
+
+    expect(result.paths).toHaveLength(1);
+    expect(traceNames(result.paths[0]!)).toContain('highConfidencePath');
+    expect(traceNames(result.paths[0]!)).not.toContain('lowFloodPath');
+    expect(result.paths[0]!.ranking.signals.averageConfidence).toBeGreaterThan(0.9);
+  }));
+
+  it('does not expand queued states after per-node top-K retention evicts them', () => withManualTrace((queries) => {
+    const entry = makeTraceNode('entry', 'entry', 1);
+    const low1 = makeTraceNode('low1', 'low1', 5);
+    const low2 = makeTraceNode('low2', 'low2', 9);
+    const low3 = makeTraceNode('low3', 'low3', 13);
+    const high = makeTraceNode('high', 'highConfidenceDetour', 17);
+    const shared = makeTraceNode('shared', 'shared', 21);
+    const target = makeTraceNode('target', 'target', 25);
+    insertTraceNodes(queries, [entry, low1, low2, low3, high, shared, target]);
+    for (const low of [low1, low2, low3]) {
+      insertTraceEdge(queries, entry, low, { sourceEvidence: 'direct-call', confidence: 0.4, resolvedBy: 'fuzzy' });
+      insertTraceEdge(queries, low, shared, { sourceEvidence: 'direct-call', confidence: 0.4, resolvedBy: 'fuzzy' });
+    }
+    insertTraceEdge(queries, entry, high, { sourceEvidence: 'direct-call', confidence: 0.95, resolvedBy: 'exact-match' });
+    insertTraceEdge(queries, high, shared, { sourceEvidence: 'direct-call', confidence: 0.95, resolvedBy: 'exact-match' });
+    insertTraceEdge(queries, shared, target, { sourceEvidence: 'direct-call', confidence: 0.95, resolvedBy: 'exact-match' });
+
+    const result = new GraphTracer(queries).trace(entry, [target], { maxDepth: 3, maxPaths: 10, edgeKinds: ['calls'] });
+    const namesByPath = result.paths.map(traceNames);
+
+    expect(namesByPath.some((names) => names.includes('highConfidenceDetour'))).toBe(true);
+    expect(namesByPath.some((names) => names.includes('low3'))).toBe(false);
+  }));
+
+  it('keeps stronger longer states to the same node instead of pruning by best depth', () => withManualTrace((queries) => {
+    const entry = makeTraceNode('entry', 'entry', 1);
+    const detour = makeTraceNode('detour', 'highConfidenceDetour', 5);
+    const shared = makeTraceNode('shared', 'shared', 9);
+    const target = makeTraceNode('target', 'target', 13);
+    insertTraceNodes(queries, [entry, detour, shared, target]);
+    insertTraceEdge(queries, entry, shared, { sourceEvidence: 'direct-call', confidence: 0.3, resolvedBy: 'fuzzy' });
+    insertTraceEdge(queries, entry, detour, { sourceEvidence: 'direct-call', confidence: 0.95, resolvedBy: 'exact-match' });
+    insertTraceEdge(queries, detour, shared, { sourceEvidence: 'direct-call', confidence: 0.95, resolvedBy: 'exact-match' });
+    insertTraceEdge(queries, shared, target, { sourceEvidence: 'direct-call', confidence: 0.95, resolvedBy: 'exact-match' });
+
+    const result = new GraphTracer(queries).trace(entry, [target], { maxDepth: 3, maxPaths: 1, edgeKinds: ['calls'] });
+
+    expect(result.paths).toHaveLength(1);
+    expect(traceNames(result.paths[0]!)).toEqual(['entry', 'highConfidenceDetour', 'shared', 'target']);
+    expect(result.paths[0]!.ranking.signals.averageConfidence).toBeGreaterThan(0.9);
+  }));
+
+  it('keeps distinct edge evidence for the same node path and ranks the stronger edge', () => withManualTrace((queries) => {
+    const entry = makeTraceNode('entry', 'entry', 1);
+    const shared = makeTraceNode('shared', 'shared', 5);
+    const target = makeTraceNode('target', 'target', 9);
+    insertTraceNodes(queries, [entry, shared, target]);
+    insertTraceEdge(queries, entry, shared, { sourceEvidence: 'direct-call', confidence: 0.3, resolvedBy: 'fuzzy', referenceName: 'shared' });
+    insertTraceEdge(queries, entry, shared, { sourceEvidence: 'direct-call', confidence: 0.95, resolvedBy: 'exact-match', referenceName: 'shared' });
+    insertTraceEdge(queries, shared, target, { sourceEvidence: 'direct-call', confidence: 0.95, resolvedBy: 'exact-match', referenceName: 'target' });
+
+    const result = new GraphTracer(queries).trace(entry, [target], { maxDepth: 2, maxPaths: 1, edgeKinds: ['calls'] });
+
+    expect(result.paths).toHaveLength(1);
+    expect(traceNames(result.paths[0]!)).toEqual(['entry', 'shared', 'target']);
+    expect(result.paths[0]!.edges[0]!.confidence).toBe(0.95);
+    expect(result.paths[0]!.edges[0]!.resolvedBy).toBe('exact-match');
+    expect(result.paths[0]!.ranking.signals.averageConfidence).toBeGreaterThan(0.9);
+  }));
+
+  it('reports visited-cap caveats even when ranked paths were found', () => withManualTrace((queries) => {
+    const entry = makeTraceNode('entry', 'entry', 1);
+    const target = makeTraceNode('target', 'target', 5);
+    const branches = Array.from({ length: 1050 }, (_, index) => makeTraceNode(`branch${index}`, `branch${index}`, 10 + index));
+    insertTraceNodes(queries, [entry, target, ...branches]);
+    insertTraceEdge(queries, entry, target, { sourceEvidence: 'direct-call', confidence: 0.95, resolvedBy: 'exact-match' });
+    for (const branch of branches) {
+      insertTraceEdge(queries, entry, branch, { sourceEvidence: 'direct-call', confidence: 0.9, resolvedBy: 'exact-match' });
+    }
+
+    const result = new GraphTracer(queries).trace(entry, [target], { maxDepth: 1, maxPaths: 1, edgeKinds: ['calls'] });
+
+    expect(result.paths).toHaveLength(1);
+    expect(result.gaps.join('\n')).toMatch(/visited node cap.*not exhaustive/i);
+  }));
+
+  it('computes direct-call ratio from sourceEvidence rather than edge kind', () => withManualTrace((queries) => {
+    const entry = makeTraceNode('entry', 'entry', 1);
+    const direct = makeTraceNode('direct', 'directHelper', 5);
+    const property = makeTraceNode('property', 'propertyHelper', 9);
+    const target = makeTraceNode('target', 'target', 13);
+    insertTraceNodes(queries, [entry, direct, property, target]);
+    insertTraceEdge(queries, entry, property, { sourceEvidence: 'property-call', confidence: 0.95, resolvedBy: 'exact-match' });
+    insertTraceEdge(queries, property, target, { sourceEvidence: 'property-call', confidence: 0.95, resolvedBy: 'exact-match' });
+    insertTraceEdge(queries, entry, direct, { sourceEvidence: 'direct-call', confidence: 0.95, resolvedBy: 'exact-match' });
+    insertTraceEdge(queries, direct, target, { sourceEvidence: 'direct-call', confidence: 0.95, resolvedBy: 'exact-match' });
+
+    const result = new GraphTracer(queries).trace(entry, [target], { maxDepth: 2, maxPaths: 2, edgeKinds: ['calls'] });
+
+    expect(traceNames(result.paths[0]!)).toEqual(['entry', 'directHelper', 'target']);
+    const propertyPath = result.paths.find((pathResult) => traceNames(pathResult).includes('propertyHelper'))!;
+    expect(result.paths[0]!.ranking.signals.directCallRatio).toBe(1);
+    expect(propertyPath.ranking.signals.directCallCount).toBe(0);
+    expect(propertyPath.ranking.signals.propertyCallCount).toBe(2);
+  }));
+});
+
 describe.skipIf(!HAS_SQLITE)('CodeGraph.trace ambiguity', () => {
   let root: string;
   let cg: CodeGraph;
@@ -466,6 +711,9 @@ describe.skipIf(!HAS_SQLITE)('MCP codegraph_trace', () => {
     const text = result.content[0].text;
     expect(text).toContain('## Trace');
     expect(text).toContain('Path 1');
+    expect(text).toContain('static score');
+    expect(text).toContain('Reason:');
+    expect(text).toContain('Caveat: Static ranking only, not runtime main-path proof.');
     expect(text).toContain('entry');
     expect(text).toContain('service');
     expect(text).toContain('repository');
