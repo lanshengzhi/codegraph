@@ -66,15 +66,6 @@ const MAX_INPUT_LENGTH = 10_000;
 const MAX_PATH_LENGTH = 4_096;
 
 /**
- * Rust path roots that have no file-system equivalent — `crate` is the
- * current crate, `super` is the parent module, `self` is the current
- * module. Used by `matchesSymbol` to strip these before file-path
- * matching so `crate::configurator::stage_apply::run` resolves the
- * same as `configurator::stage_apply::run`.
- */
-const RUST_PATH_PREFIXES = new Set(['crate', 'super', 'self']);
-
-/**
  * Node kinds that contain other symbols. For these, `codegraph_node` with
  * `includeCode=true` returns a structural outline (member names + signatures
  * + line numbers) instead of the full body, which for a large class is a
