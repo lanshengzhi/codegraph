@@ -17,8 +17,8 @@ import type { Node, UnresolvedReference } from '../src/types';
 
 function hasSqliteBindings(): boolean {
   try {
-    const Database = require('better-sqlite3');
-    const db = new Database(':memory:');
+    const { DatabaseSync } = require('node:sqlite');
+    const db = new DatabaseSync(':memory:');
     db.close();
     return true;
   } catch {
@@ -171,8 +171,8 @@ describe('unresolved reference metadata schema', () => {
 
   it.skipIf(!HAS_SQLITE)('migrates a real v4 database to v5 without changing old refs', () => {
     const dbPath = path.join(dir, 'v4.db');
-    const Database = require('better-sqlite3');
-    const db = new Database(dbPath);
+    const { DatabaseSync } = require('node:sqlite');
+    const db = new DatabaseSync(dbPath);
     db.exec(`
       CREATE TABLE schema_versions (version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL, description TEXT);
       INSERT INTO schema_versions (version, applied_at, description) VALUES
