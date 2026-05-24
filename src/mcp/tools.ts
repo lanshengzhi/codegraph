@@ -562,10 +562,26 @@ export const tools: ToolDefinition[] = [
   },
   {
     name: 'codegraph_status',
-    description: 'Get the status of the CodeGraph index, including statistics about indexed files, nodes, and edges.',
+    description: 'Get the status of the CodeGraph index, including statistics about indexed files, nodes, and edges. Use detail: "coverage" for indexed-source boundary explanations, pending changes, extraction errors, unresolved refs, and workspace/alias summaries.',
     inputSchema: {
       type: 'object',
       properties: {
+        detail: {
+          type: 'string',
+          description: 'Output detail level. "summary" (default) returns compact stats. "coverage" adds indexed-only boundary explanations, pending changes, extraction errors, unresolved refs, workspace/alias summaries, and filesystem coverage comparison.',
+          enum: ['summary', 'coverage'],
+          default: 'summary',
+        },
+        checkFilesystem: {
+          type: 'boolean',
+          description: 'When detail is "coverage", also scan the filesystem for supported source files and compare against the index. Defaults to false to avoid blocking on large repos; enable explicitly when you need to know what source files are missing from the index.',
+          default: false,
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum number of samples to include in each section (default: 20)',
+          default: 20,
+        },
         projectPath: projectPathProperty,
       },
     },
@@ -1640,47 +1656,151 @@ export class ToolHandler {
    */
   private async handleStatus(args: Record<string, unknown>): Promise<ToolResult> {
     const cg = this.getCodeGraph(args.projectPath as string | undefined);
-    const stats = cg.getStats();
+    const detail = (args.detail as 'summary' | 'coverage') || 'summary';
+    const checkFilesystem = args.checkFilesystem === true;
+    const limit = args.limit != null ? clamp(args.limit as number, 1, 200) : 20;
 
-    const lines: string[] = [
-      '## CodeGraph Status',
-      '',
-      `**Files indexed:** ${stats.fileCount}`,
-      `**Total nodes:** ${stats.nodeCount}`,
-      `**Total edges:** ${stats.edgeCount}`,
-      `**Database size:** ${(stats.dbSizeBytes / 1024 / 1024).toFixed(2)} MB`,
-    ];
-
-    // Surface the active SQLite backend (node:sqlite, Node's built-in real
-    // SQLite — full WAL + FTS5, no native build).
-    lines.push(`**Backend:** node:sqlite (Node built-in) — full WAL + FTS5`);
-
-    // Effective journal mode. 'wal' ⇒ concurrent reads never block on a writer;
-    // anything else ⇒ they can ("database is locked"). node:sqlite supports WAL
-    // everywhere, so a non-wal mode means the filesystem can't (network/
-    // virtualized mounts, WSL2 /mnt). See issue #238.
-    const journalMode = cg.getJournalMode();
-    if (journalMode === 'wal') {
-      lines.push(`**Journal mode:** wal (concurrent reads safe)`);
-    } else {
-      lines.push(
-        `**Journal mode:** ⚠ ${journalMode || 'unknown'} — WAL not active, so reads ` +
-        `can block on a concurrent write (WAL appears unsupported on this filesystem)`
-      );
+    if (detail !== 'summary' && detail !== 'coverage') {
+      return this.errorResult(`Invalid detail: "${detail}". Use "summary" or "coverage"."`);
     }
 
-    lines.push('', '### Nodes by Kind:');
+    const report = cg.getCoverageReport({ detail, checkFilesystem, limit });
 
-    for (const [kind, count] of Object.entries(stats.nodesByKind)) {
-      if ((count as number) > 0) {
-        lines.push(`- ${kind}: ${count}`);
+    if (detail === 'summary') {
+      const lines: string[] = [
+        '## CodeGraph Status',
+        '',
+        `**Files indexed:** ${report.fileCount}`,
+        `**Total nodes:** ${report.nodeCount}`,
+        `**Total edges:** ${report.edgeCount}`,
+        `**Database size:** ${(cg.getStats().dbSizeBytes / 1024 / 1024).toFixed(2)} MB`,
+      ];
+
+      lines.push(`**Backend:** node:sqlite (Node built-in) — full WAL + FTS5`);
+
+      const journalMode = cg.getJournalMode();
+      if (journalMode === 'wal') {
+        lines.push(`**Journal mode:** wal (concurrent reads safe)`);
+      } else {
+        lines.push(
+          `**Journal mode:** ⚠ ${journalMode || 'unknown'} — WAL not active, so reads ` +
+          `can block on a concurrent write (WAL appears unsupported on this filesystem)`
+        );
+      }
+
+      lines.push('', '### Nodes by Kind:');
+      for (const [kind, count] of Object.entries(report.filesByLanguage)) {
+        if ((count as number) > 0) {
+          lines.push(`- ${kind}: ${count}`);
+        }
+      }
+
+      lines.push('', '### Languages:');
+      for (const [lang, count] of Object.entries(report.filesByLanguage)) {
+        if ((count as number) > 0) {
+          lines.push(`- ${lang}: ${count}`);
+        }
+      }
+
+      return this.textResult(lines.join('\n'));
+    }
+
+    // detail === 'coverage'
+    const lines: string[] = [
+      '## CodeGraph Coverage Status',
+      '',
+      '> CodeGraph reports indexed source coverage, not a complete filesystem inventory.',
+      '',
+      `**Indexed files:** ${report.fileCount}`,
+      `**Total nodes:** ${report.nodeCount}`,
+      `**Total edges:** ${report.edgeCount}`,
+    ];
+
+    lines.push('', '### Languages:');
+    const langs = Object.entries(report.filesByLanguage).filter(([, c]) => c > 0).sort((a, b) => b[1] - a[1]);
+    if (langs.length === 0) {
+      lines.push('- No indexed files yet.');
+    } else {
+      for (const [lang, count] of langs) {
+        lines.push(`- ${lang}: ${count}`);
       }
     }
 
-    lines.push('', '### Languages:');
-    for (const [lang, count] of Object.entries(stats.filesByLanguage)) {
-      if ((count as number) > 0) {
-        lines.push(`- ${lang}: ${count}`);
+    lines.push('', '### Top indexed roots:');
+    if (report.topIndexedRoots.length === 0) {
+      lines.push('- No indexed files yet.');
+    } else {
+      for (const r of report.topIndexedRoots) {
+        lines.push(`- ${r.path}: ${r.files} file(s)`);
+      }
+    }
+
+    if (report.pendingChanges.added > 0 || report.pendingChanges.modified > 0 || report.pendingChanges.removed > 0) {
+      lines.push('', '### Pending source changes:');
+      lines.push(`- Added: ${report.pendingChanges.added}`);
+      lines.push(`- Modified: ${report.pendingChanges.modified}`);
+      lines.push(`- Removed: ${report.pendingChanges.removed}`);
+      if (report.pendingChanges.samples.length > 0) {
+        lines.push(`- Samples: ${report.pendingChanges.samples.slice(0, 5).join(', ')}`);
+      }
+    }
+
+    if (report.extractionErrors.count > 0) {
+      lines.push('', `### Extraction errors: ${report.extractionErrors.count} file(s)`);
+      for (const s of report.extractionErrors.samples.slice(0, 5)) {
+        lines.push(`- ${s.path}: ${s.errors.join('; ')}`);
+      }
+    }
+
+    if (report.unresolvedRefs.count > 0) {
+      lines.push('', `### Unresolved references: ${report.unresolvedRefs.count}`);
+      const byKind = Object.entries(report.unresolvedRefs.byKind).sort((a, b) => b[1] - a[1]);
+      for (const [kind, count] of byKind) {
+        lines.push(`- ${kind}: ${count}`);
+      }
+      if (report.unresolvedRefs.topNames.length > 0) {
+        const names = report.unresolvedRefs.topNames.slice(0, 5).map((n) => `${n.name}(${n.count})`).join(', ');
+        lines.push(`- Top names: ${names}`);
+      }
+    }
+
+    if (report.workspaceSummary) {
+      lines.push('', `### Workspace packages: ${report.workspaceSummary.packageCount} from ${report.workspaceSummary.source}`);
+    }
+
+    if (report.aliasSummary) {
+      lines.push('', `### Path aliases: ${report.aliasSummary.patternCount} ${report.aliasSummary.source} pattern(s)`);
+      for (const p of report.aliasSummary.patterns) {
+        lines.push(`- ${p}`);
+      }
+    }
+
+    if (report.filesystemCheck?.enabled) {
+      lines.push('', '### Filesystem check:');
+      lines.push(`- Supported source files on disk: ${report.filesystemCheck.supportedSourceFiles ?? 'unknown'}`);
+      if (report.filesystemCheck.missingFromIndex.count > 0) {
+        lines.push(`- Missing from index: ${report.filesystemCheck.missingFromIndex.count} file(s)`);
+        for (const p of report.filesystemCheck.missingFromIndex.samples.slice(0, 5)) {
+          lines.push(`  - ${p}`);
+        }
+      }
+      if (report.filesystemCheck.indexedButMissing.count > 0) {
+        lines.push(`- Indexed but missing on disk: ${report.filesystemCheck.indexedButMissing.count} file(s)`);
+        for (const p of report.filesystemCheck.indexedButMissing.samples.slice(0, 5)) {
+          lines.push(`  - ${p}`);
+        }
+      }
+    }
+
+    lines.push('', '### Coverage boundaries');
+    for (const c of report.caveats) {
+      lines.push(`- ${c}`);
+    }
+
+    if (report.recommendations.length > 0) {
+      lines.push('', '### Recommended next');
+      for (const r of report.recommendations) {
+        lines.push(`- ${r}`);
       }
     }
 

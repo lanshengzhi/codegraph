@@ -1057,3 +1057,41 @@ export interface FindRelevantContextOptions {
   /** Node types to include */
   nodeKinds?: NodeKind[];
 }
+
+// =============================================================================
+// Coverage / Status Types (P3a)
+// =============================================================================
+
+export type CoverageDetail = 'summary' | 'coverage';
+export type CoverageStatus = 'available' | 'partial' | 'no-index' | 'filesystem-scan-skipped';
+
+export interface CoverageReportOptions {
+  detail?: CoverageDetail;
+  checkFilesystem?: boolean;
+  limit?: number;
+  /** Hard timeout for filesystem scan in ms to avoid blocking on large repos. */
+  filesystemScanTimeoutMs?: number;
+}
+
+export interface CoverageReport {
+  status: CoverageStatus;
+  indexedOnly: true;
+  fileCount: number;
+  nodeCount: number;
+  edgeCount: number;
+  filesByLanguage: Record<Language, number>;
+  topIndexedRoots: Array<{ path: string; files: number }>;
+  pendingChanges: { added: number; modified: number; removed: number; samples: string[] };
+  extractionErrors: { count: number; samples: Array<{ path: string; errors: string[] }> };
+  unresolvedRefs: { count: number; byKind: Record<string, number>; topNames: Array<{ name: string; count: number }> };
+  workspaceSummary?: { packageCount: number; source: string };
+  aliasSummary?: { source: 'tsconfig' | 'jsconfig'; patternCount: number; patterns: string[] };
+  filesystemCheck?: {
+    enabled: boolean;
+    supportedSourceFiles?: number;
+    missingFromIndex: { count: number; samples: string[] };
+    indexedButMissing: { count: number; samples: string[] };
+  };
+  caveats: string[];
+  recommendations: string[];
+}

@@ -29,6 +29,8 @@ import {
   NodeStructureResult,
   FieldSitesOptions,
   FieldSitesResult,
+  CoverageReportOptions,
+  CoverageReport,
 } from './types';
 import { DatabaseConnection, getDatabasePath } from './db';
 import { QueryBuilder } from './db/queries';
@@ -66,6 +68,7 @@ import { Mutex, FileLock } from './utils';
 import { FileWatcher, WatchOptions } from './sync';
 import { NodeStructureAnalyzer } from './structure/node-structure';
 import { FieldSitesAnalyzer } from './structure/field-sites';
+import { buildCoverageReport } from './ecosystem/coverage';
 
 // Re-export types for consumers
 export * from './types';
@@ -585,6 +588,21 @@ export class CodeGraph {
     const stats = this.queries.getStats();
     stats.dbSizeBytes = this.db.getSize();
     return stats;
+  }
+
+  /**
+   * Get a coverage/status report with indexed-only boundary explanations.
+   * Query-time only; no DB schema changes.
+   */
+  getCoverageReport(options?: CoverageReportOptions): CoverageReport {
+    return buildCoverageReport(
+      this.projectRoot,
+      this.getStats(),
+      this.getFiles(),
+      this.queries,
+      () => this.getChangedFiles(),
+      options
+    );
   }
 
   /**

@@ -1406,6 +1406,39 @@ export class QueryBuilder {
   }
 
   /**
+   * Get a bounded summary of unresolved references: count by kind and top names.
+   * Light-weight — does not load all refs into memory.
+   */
+  getUnresolvedReferencesSummary(limit: number): {
+    count: number;
+    byKind: Record<string, number>;
+    topNames: Array<{ name: string; count: number }>;
+  } {
+    const countRow = this.db.prepare('SELECT COUNT(*) as count FROM unresolved_refs').get() as { count: number };
+    const count = countRow.count;
+
+    const byKind: Record<string, number> = {};
+    const kindRows = this.db
+      .prepare('SELECT reference_kind, COUNT(*) as count FROM unresolved_refs GROUP BY reference_kind')
+      .all() as Array<{ reference_kind: string; count: number }>;
+    for (const row of kindRows) {
+      byKind[row.reference_kind] = row.count;
+    }
+
+    const topNames: Array<{ name: string; count: number }> = [];
+    if (count > 0) {
+      const nameRows = this.db
+        .prepare('SELECT reference_name, COUNT(*) as count FROM unresolved_refs GROUP BY reference_name ORDER BY count DESC LIMIT ?')
+        .all(limit) as Array<{ reference_name: string; count: number }>;
+      for (const row of nameRows) {
+        topNames.push({ name: row.reference_name, count: row.count });
+      }
+    }
+
+    return { count, byKind, topNames };
+  }
+
+  /**
    * Delete all unresolved references (after resolution)
    */
   clearUnresolvedReferences(): void {

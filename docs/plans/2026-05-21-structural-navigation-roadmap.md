@@ -221,6 +221,8 @@ codegraph_field_sites({ field: "systemPrompt" })
 
 ### P3：registry / workspace import / coverage 生态增强
 
+**状态：** proposed / ready for TDD implementation (2026-05-24)。详见 [`2026-05-24-structural-navigation-p3-ecosystem-navigation-plan.md`](./2026-05-24-structural-navigation-p3-ecosystem-navigation-plan.md)。
+
 **目标：** 改善 monorepo、registry/resolver 和索引覆盖边界体验。
 
 **主要能力：**
@@ -236,6 +238,8 @@ codegraph_field_sites({ field: "systemPrompt" })
 - runtime branch 唯一判定；
 - 完整 Node package resolver 兼容；
 - 替代文件系统视图。
+
+**详细计划：** [`2026-05-24-structural-navigation-p3-ecosystem-navigation-plan.md`](./2026-05-24-structural-navigation-p3-ecosystem-navigation-plan.md)
 
 ---
 

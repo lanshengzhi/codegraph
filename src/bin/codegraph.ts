@@ -690,8 +690,11 @@ program
   .command('status [path]')
   .description('Show index status and statistics')
   .option('-j, --json', 'Output as JSON')
-  .action(async (pathArg: string | undefined, options: { json?: boolean }) => {
+  .option('--coverage', 'Show detailed coverage report with indexed-only boundary explanations')
+  .option('--check-filesystem', 'Scan filesystem for supported source files and compare against index (implies --coverage)')
+  .action(async (pathArg: string | undefined, options: { json?: boolean; coverage?: boolean; checkFilesystem?: boolean }) => {
     const projectPath = resolveProjectPath(pathArg);
+    const coverage = options.coverage || options.checkFilesystem || false;
 
     try {
       if (!isInitialized(projectPath)) {
@@ -713,25 +716,51 @@ program
       const backend = cg.getBackend();
       const journalMode = cg.getJournalMode();
 
+      // Build coverage report if requested
+      const report = coverage
+        ? cg.getCoverageReport({ detail: 'coverage', checkFilesystem: options.checkFilesystem })
+        : null;
+
       // JSON output mode
       if (options.json) {
-        console.log(JSON.stringify({
-          initialized: true,
-          projectPath,
-          fileCount: stats.fileCount,
-          nodeCount: stats.nodeCount,
-          edgeCount: stats.edgeCount,
-          dbSizeBytes: stats.dbSizeBytes,
-          backend,
-          journalMode,
-          nodesByKind: stats.nodesByKind,
-          languages: Object.entries(stats.filesByLanguage).filter(([, count]) => count > 0).map(([lang]) => lang),
-          pendingChanges: {
-            added: changes.added.length,
-            modified: changes.modified.length,
-            removed: changes.removed.length,
-          },
-        }));
+        if (coverage && report) {
+          console.log(JSON.stringify({
+            initialized: true,
+            projectPath,
+            fileCount: stats.fileCount,
+            nodeCount: stats.nodeCount,
+            edgeCount: stats.edgeCount,
+            dbSizeBytes: stats.dbSizeBytes,
+            backend,
+            journalMode,
+            nodesByKind: stats.nodesByKind,
+            languages: Object.entries(stats.filesByLanguage).filter(([, count]) => count > 0).map(([lang]) => lang),
+            pendingChanges: {
+              added: changes.added.length,
+              modified: changes.modified.length,
+              removed: changes.removed.length,
+            },
+            coverage: report,
+          }));
+        } else {
+          console.log(JSON.stringify({
+            initialized: true,
+            projectPath,
+            fileCount: stats.fileCount,
+            nodeCount: stats.nodeCount,
+            edgeCount: stats.edgeCount,
+            dbSizeBytes: stats.dbSizeBytes,
+            backend,
+            journalMode,
+            nodesByKind: stats.nodesByKind,
+            languages: Object.entries(stats.filesByLanguage).filter(([, count]) => count > 0).map(([lang]) => lang),
+            pendingChanges: {
+              added: changes.added.length,
+              modified: changes.modified.length,
+              removed: changes.removed.length,
+            },
+          }));
+        }
         cg.destroy();
         return;
       }
@@ -800,6 +829,96 @@ program
         success('Index is up to date');
       }
       console.log();
+
+      // Coverage details
+      if (coverage && report) {
+        console.log(chalk.bold('Coverage Report:'));
+        console.log(chalk.dim('  (Indexed source coverage, not a complete filesystem inventory)'));
+        console.log();
+
+        console.log(chalk.bold('  Top indexed roots:'));
+        for (const r of report.topIndexedRoots) {
+          console.log(`    ${r.path}: ${r.files} file(s)`);
+        }
+        console.log();
+
+        if (report.pendingChanges.added > 0 || report.pendingChanges.modified > 0 || report.pendingChanges.removed > 0) {
+          console.log(chalk.bold('  Pending source changes:'));
+          console.log(`    Added: ${report.pendingChanges.added}`);
+          console.log(`    Modified: ${report.pendingChanges.modified}`);
+          console.log(`    Removed: ${report.pendingChanges.removed}`);
+          if (report.pendingChanges.samples.length > 0) {
+            console.log(`    Samples: ${report.pendingChanges.samples.slice(0, 5).join(', ')}`);
+          }
+          console.log();
+        }
+
+        if (report.extractionErrors.count > 0) {
+          console.log(chalk.yellow(`  Extraction errors: ${report.extractionErrors.count} file(s)`));
+          for (const s of report.extractionErrors.samples.slice(0, 5)) {
+            console.log(`    ${s.path}: ${s.errors.join('; ')}`);
+          }
+          console.log();
+        }
+
+        if (report.unresolvedRefs.count > 0) {
+          console.log(chalk.yellow(`  Unresolved references: ${report.unresolvedRefs.count}`));
+          const byKind = Object.entries(report.unresolvedRefs.byKind).sort((a, b) => b[1] - a[1]);
+          for (const [kind, count] of byKind) {
+            console.log(`    ${kind}: ${count}`);
+          }
+          if (report.unresolvedRefs.topNames.length > 0) {
+            const names = report.unresolvedRefs.topNames.slice(0, 5).map((n) => `${n.name}(${n.count})`).join(', ');
+            console.log(`    Top names: ${names}`);
+          }
+          console.log();
+        }
+
+        if (report.workspaceSummary) {
+          console.log(chalk.bold(`  Workspace packages: ${report.workspaceSummary.packageCount} from ${report.workspaceSummary.source}`));
+          console.log();
+        }
+
+        if (report.aliasSummary) {
+          console.log(chalk.bold(`  Path aliases: ${report.aliasSummary.patternCount} ${report.aliasSummary.source} pattern(s)`));
+          for (const p of report.aliasSummary.patterns) {
+            console.log(`    ${p}`);
+          }
+          console.log();
+        }
+
+        if (report.filesystemCheck?.enabled) {
+          console.log(chalk.bold('  Filesystem check:'));
+          console.log(`    Supported source files on disk: ${report.filesystemCheck.supportedSourceFiles ?? 'unknown'}`);
+          if (report.filesystemCheck.missingFromIndex.count > 0) {
+            console.log(chalk.yellow(`    Missing from index: ${report.filesystemCheck.missingFromIndex.count} file(s)`));
+            for (const p of report.filesystemCheck.missingFromIndex.samples.slice(0, 5)) {
+              console.log(`      - ${p}`);
+            }
+          }
+          if (report.filesystemCheck.indexedButMissing.count > 0) {
+            console.log(chalk.yellow(`    Indexed but missing on disk: ${report.filesystemCheck.indexedButMissing.count} file(s)`));
+            for (const p of report.filesystemCheck.indexedButMissing.samples.slice(0, 5)) {
+              console.log(`      - ${p}`);
+            }
+          }
+          console.log();
+        }
+
+        console.log(chalk.bold('  Coverage boundaries:'));
+        for (const c of report.caveats) {
+          console.log(chalk.dim(`    - ${c}`));
+        }
+        console.log();
+
+        if (report.recommendations.length > 0) {
+          console.log(chalk.bold('  Recommended next:'));
+          for (const r of report.recommendations) {
+            console.log(`    - ${r}`);
+          }
+          console.log();
+        }
+      }
 
       cg.destroy();
     } catch (err) {
