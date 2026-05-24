@@ -25,6 +25,7 @@ Use codegraph for **structural** questions — what calls what, what would break
 | "Is the index healthy?" | `codegraph_status` |
 | "Where is field/key X written, read, or mapped?" | `codegraph_field_sites` (static AST hints; not full dataflow or runtime proof) |
 | "Which workspace package file does import X resolve to?" | `codegraph_import_candidates` (static workspace package candidates; not runtime proof) |
+| "What provider/tool/route registries exist?" | `codegraph_registry_candidates` (static AST pattern matching; not runtime branch proof) |
 
 ### Rules of thumb
 

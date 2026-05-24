@@ -58,4 +58,33 @@ describe('CodeGraph instructions', () => {
     expect(INSTRUCTIONS_TEMPLATE).toContain('dynamic or computed keys');
     expect(INSTRUCTIONS_TEMPLATE).toContain('Field sites are static hints, not dataflow');
   });
+
+  // P3 ecosystem tools
+  it('mentions ecosystem candidate tools and coverage caveats in server instructions', () => {
+    // PR2: workspace import candidates
+    expect(SERVER_INSTRUCTIONS).toContain('codegraph_import_candidates');
+    expect(SERVER_INSTRUCTIONS).toContain('not a complete Node/TypeScript resolver');
+    // PR3: registry candidates
+    expect(SERVER_INSTRUCTIONS).toContain('codegraph_registry_candidates');
+    expect(SERVER_INSTRUCTIONS).toContain('not runtime branch proof');
+    // PR1: coverage / indexed-only boundary
+    expect(SERVER_INSTRUCTIONS).toContain('indexed source coverage');
+    expect(SERVER_INSTRUCTIONS).toContain('not a complete filesystem inventory');
+    // Ensure coverage detail is mentioned
+    expect(SERVER_INSTRUCTIONS).toContain('detail: "coverage"');
+  });
+
+  it('mentions ecosystem candidate tools and caveats in installed agent instructions', () => {
+    // PR2: workspace import candidates
+    expect(INSTRUCTIONS_TEMPLATE).toContain('codegraph_import_candidates');
+    expect(INSTRUCTIONS_TEMPLATE).toContain('static workspace package entry candidates');
+    // PR3: registry candidates
+    expect(INSTRUCTIONS_TEMPLATE).toContain('codegraph_registry_candidates');
+    expect(INSTRUCTIONS_TEMPLATE).toContain('not runtime');
+    expect(INSTRUCTIONS_TEMPLATE).toContain('keys are low-confidence');
+    // PR1: coverage / indexed-only boundary
+    expect(INSTRUCTIONS_TEMPLATE).toContain('indexed source coverage');
+    expect(INSTRUCTIONS_TEMPLATE).toContain('not a complete filesystem inventory');
+    expect(INSTRUCTIONS_TEMPLATE).toContain('detail: "coverage"');
+  });
 });

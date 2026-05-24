@@ -33,6 +33,8 @@ import {
   CoverageReport,
   WorkspaceImportOptions,
   WorkspaceImportCandidatesResult,
+  RegistryCandidatesOptions,
+  RegistryCandidatesResult,
 } from './types';
 import { DatabaseConnection, getDatabasePath } from './db';
 import { QueryBuilder } from './db/queries';
@@ -75,6 +77,7 @@ import {
   getWorkspaceImportCandidates,
   clearWorkspacePackageCache,
 } from './ecosystem/package-workspace';
+import { RegistryCandidatesAnalyzer } from './ecosystem/registry-candidates';
 
 // Re-export types for consumers
 export * from './types';
@@ -626,6 +629,59 @@ export class CodeGraph {
       this.getFiles(),
       (path) => this.getNodesInFile(path),
       specifier,
+      options
+    );
+  }
+
+  /**
+   * Get registry/resolver candidates (provider, tool, extension, route, handler)
+   * via AST analysis of indexed TS/JS files. Query-time only; no DB migration.
+   */
+  async getRegistryCandidates(options?: RegistryCandidatesOptions): Promise<RegistryCandidatesResult> {
+    // Validate scopePath: must be relative, no escapes
+    if (options?.scopePath) {
+      const sp = options.scopePath;
+      if (path.isAbsolute(sp)) {
+        return {
+          status: 'invalid-query',
+          query: options.query,
+          key: options.key,
+          kind: options.kind ?? 'all',
+          candidates: [],
+          totalCandidates: 0,
+          omittedCandidates: 0,
+          searchedFiles: 0,
+          parsedFiles: 0,
+          skippedSummary: {},
+          caveats: ['scopePath must be a relative path, not absolute.'],
+          recommendations: ['Provide a relative path prefix (e.g., "src/providers").'],
+        };
+      }
+      if (sp.includes('..')) {
+        return {
+          status: 'invalid-query',
+          query: options.query,
+          key: options.key,
+          kind: options.kind ?? 'all',
+          candidates: [],
+          totalCandidates: 0,
+          omittedCandidates: 0,
+          searchedFiles: 0,
+          parsedFiles: 0,
+          skippedSummary: {},
+          caveats: ['scopePath must not contain "..".'],
+          recommendations: ['Provide a relative path prefix without path escapes.'],
+        };
+      }
+    }
+
+    const files = this.getFiles();
+    const analyzer = new RegistryCandidatesAnalyzer(this.projectRoot);
+    return analyzer.analyze(
+      files,
+      (p) => this.getNodesInFile(p),
+      (nodeId) => this.getOutgoingEdges(nodeId),
+      (id) => this.getNode(id),
       options
     );
   }

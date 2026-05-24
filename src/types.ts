@@ -1169,3 +1169,82 @@ export interface WorkspaceImportOptions {
   limit?: number;
   includeUnindexed?: boolean;
 }
+
+// =============================================================================
+// Registry Candidate Types (P3c PR3)
+// =============================================================================
+
+export type RegistryCandidateStatus =
+  | 'available'
+  | 'no-matches'
+  | 'partial'
+  | 'invalid-query'
+  | 'parser-unavailable';
+
+export type RegistryKind =
+  | 'provider'
+  | 'tool'
+  | 'extension'
+  | 'route'
+  | 'handler'
+  | 'all';
+
+export type RegistryEvidence =
+  | 'route-node'
+  | 'object-literal'
+  | 'map-constructor'
+  | 'map-set'
+  | 'register-call'
+  | 'definition-array';
+
+export type RegistryConfidence = 'high' | 'medium' | 'low';
+
+export type RegistryHandlerResolutionStatus =
+  | 'resolved'
+  | 'unsupported-language'
+  | 'not-indexed'
+  | 'ambiguous';
+
+export interface RegistryCandidate {
+  kind: RegistryKind;
+  registryName?: string;
+  keyText?: string;
+  handlerText?: string;
+  evidence: RegistryEvidence;
+  confidence: RegistryConfidence;
+  range: SourceRange;
+  enclosingNode?: NodeHandle;
+  handlerNode?: NodeHandle;
+  handlerAlternatives?: NodeHandle[];
+  handlerResolutionStatus?: RegistryHandlerResolutionStatus;
+  routePath?: string;
+  isDynamicKey?: boolean;
+  isTestOrFixture?: boolean;
+  note?: string;
+}
+
+export interface RegistryCandidatesResult {
+  status: RegistryCandidateStatus;
+  query?: string;
+  key?: string;
+  kind: RegistryKind;
+  candidates: RegistryCandidate[];
+  totalCandidates: number;
+  omittedCandidates: number;
+  searchedFiles: number;
+  parsedFiles: number;
+  skippedSummary: Record<string, number>;
+  caveats: string[];
+  recommendations: string[];
+}
+
+export interface RegistryCandidatesOptions {
+  query?: string;
+  key?: string;
+  kind?: RegistryKind;
+  scopePath?: string;
+  limit?: number;
+  includeTests?: boolean;
+  maxDisplayCandidates?: number;
+  projectPath?: string;
+}

@@ -51,9 +51,10 @@ of calls; a grep/read exploration is dozens.
 - **"Trace this lifecycle / path from entry to target."** → \`codegraph_trace\` (path-shaped static graph guidance with handles, edge evidence, static ranking score/reason, and boundary/low-evidence caveats; not runtime proof)
 - **"Show me several related symbols' source / survey an area."** → \`codegraph_explore\` (ONE capped call; prefer over many node/Read; file headers may include static relevance reasons)
 - **"What's in directory X?"** → \`codegraph_files\`
-- **"Is the index ready / what's its size?"** → \`codegraph_status\`
+- **"Is the index ready / what's its size / what's indexed vs filesystem?"** → \`codegraph_status\` (pass \`detail: "coverage"\` for indexed-source boundary explanations with pending changes, extraction errors, unresolved refs, and workspace/alias summaries. CodeGraph reports indexed source coverage, not a complete filesystem inventory.)
 - **"Where is field/key X written, read, or mapped?"** → \`codegraph_field_sites\` (static AST-level navigation hints grouped by write/mapping/construction/read; not full dataflow or runtime proof)
 - **"Which workspace package file does import X resolve to?"** → \`codegraph_import_candidates\` (static workspace package entry candidates; not a complete Node/TypeScript resolver)
+- **"What provider/tool/route registries exist?"** → \`codegraph_registry_candidates\` (static registry/resolver candidates from AST pattern matching; not runtime branch proof)
 
 ## Common chains
 
@@ -81,5 +82,8 @@ of calls; a grep/read exploration is dozens.
 - codegraph_context/codegraph_explore relevance reasons are static ranking explanations from recorded search/graph signals (exact name/path matches, query-symbol extraction, entry-point proximity, generic-name or test/generated penalties). They explain why candidates were returned, not complete semantic proof.
 - \`codegraph_node({ nodeId, detail: "structure" })\` is static AST navigation for long TS/JS function/method bodies. It highlights ranges, control-flow syntax, callsites, callback-like hints, and local object/return construction; it is not runtime proof, a complete control-flow/dataflow graph, or an LLM summary.
 - \`codegraph_field_sites\` returns static AST navigation hints (exact identifier match, not substring). It covers writes, reads, object construction, destructuring, return-object fields, and syntax-level mapping hints — not full dataflow, alias analysis, or runtime payload proof. A "no-matches" result only means the exact string wasn't found in searchable TS/JS files; dynamic/computed/alias cases are not covered.
+- \`codegraph_import_candidates\` returns static workspace package entry candidates, not a complete Node/TypeScript resolver. Exports conditions, dist→src heuristics, and unindexed packages are labeled with evidence and confidence.
+- \`codegraph_registry_candidates\` returns static AST pattern matches (object-literal, Map, .set(), register-call, definition-array) in TS/JS files. Dynamic/computed keys are low-confidence and labeled; the tool does not prove which registry key is active at runtime.
+- \`codegraph_status({ detail: "coverage" })\` reports indexed source coverage, not a complete filesystem inventory. Use \`git status\`, \`find\`, or \`read\` for filesystem-level checks.
 - No live correctness validation — that's still the TypeScript compiler / test suite / linter's job. Codegraph supplements those with structural context they don't have.
 `;

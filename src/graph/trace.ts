@@ -188,6 +188,11 @@ export class GraphTracer {
       recommendations.push('Try increasing maxDepth, widening edgeKinds, or using codegraph_explore on the returned endpoint handles.');
     }
 
+    // CP7: Inject ecosystem tool follow-up recommendations when trace hits
+    // workspace import or registry/provider/tool/route boundaries.
+    // Deduplicated — each tool recommended at most once per trace call.
+    this.addEcosystemRecommendations(limitedPaths, boundaries, recommendations);
+
     return {
       targetCandidates: filteredTargets,
       paths: limitedPaths,
@@ -196,6 +201,116 @@ export class GraphTracer {
       recommendations,
       visitedCount,
     };
+  }
+
+  /**
+   * CP7: Scan trace paths and boundaries for ecosystem navigation signals
+   * (workspace imports, registry/provider/tool/route patterns) and add
+   * copyable tool recommendations. Each tool recommended at most once.
+   */
+  private addEcosystemRecommendations(
+    paths: TracePath[],
+    boundaries: TraceBoundary[],
+    recs: string[],
+  ): void {
+    const seen = new Set(this.normalizeRecKey(recs));
+    let importRecommended = false;
+    let registryRecommended = false;
+
+    // Scan path edges
+    for (const path of paths) {
+      for (const edge of path.edges) {
+        if (!importRecommended && edge.kind === 'imports') {
+          const spec = edge.calleeText
+            ? this.extractBareSpecifier(edge.calleeText)
+            : undefined;
+          if (spec) {
+            this.addRec(recs, seen, `codegraph_import_candidates({ specifier: "${spec}" })`);
+            importRecommended = true;
+          }
+        }
+        if (!registryRecommended && this.isRegistryEdge(edge)) {
+          const query = edge.propertyText ?? edge.calleeText ?? edge.referenceName ?? 'provider';
+          this.addRec(recs, seen, `codegraph_registry_candidates({ query: "${query}" })`);
+          registryRecommended = true;
+        }
+      }
+    }
+
+    // Scan boundary edges
+    for (const b of boundaries) {
+      const edge = b.edge;
+      if (!edge) continue;
+      if (!importRecommended && edge.kind === 'imports') {
+        const spec = edge.calleeText
+          ? this.extractBareSpecifier(edge.calleeText)
+          : undefined;
+        if (spec) {
+          this.addRec(recs, seen, `codegraph_import_candidates({ specifier: "${spec}" })`);
+          importRecommended = true;
+        }
+      }
+      if (!registryRecommended && this.isRegistryEdge(edge)) {
+        const query = edge.propertyText ?? edge.calleeText ?? edge.referenceName ?? 'provider';
+        this.addRec(recs, seen, `codegraph_registry_candidates({ query: "${query}" })`);
+        registryRecommended = true;
+      }
+    }
+  }
+
+  /**
+   * Extract a bare/scoped package specifier from an import path string.
+   * Returns null if it doesn't look like a package specifier.
+   */
+  private extractBareSpecifier(text: string): string | null {
+    const trimmed = text.trim().replace(/^['"]|['"]$/g, '');
+    // Scoped: @scope/pkg or @scope/pkg/subpath
+    if (/^@[^/]+\/[^/]+/.test(trimmed)) {
+      return trimmed.split('/').slice(0, 2).join('/');
+    }
+    // Bare: pkg or pkg/subpath
+    if (/^[a-z][a-z0-9_-]*(\/[a-z][a-z0-9_-]*)*$/i.test(trimmed) && !trimmed.startsWith('.') && !trimmed.startsWith('/')) {
+      return trimmed.split('/')[0]!;
+    }
+    return null;
+  }
+
+  /**
+   * Check if a trace edge suggests a registry pattern:
+   * - property-call with registry-like property name
+   * - callback evidence
+   * - resolvedBy framework with registry-like callee name
+   */
+  private isRegistryEdge(edge: TraceEdge): boolean {
+    // Direct property-call evidence
+    if (edge.sourceEvidence === 'property-call') {
+      const prop = (edge.propertyText ?? '').toLowerCase();
+      if (/register|provider|tool|route|handler|plugin|extension|middleware/i.test(prop)) {
+        return true;
+      }
+    }
+    // Callee or reference name with registry keywords
+    const callee = (edge.calleeText ?? edge.referenceName ?? '').toLowerCase();
+    if (callee && /\b(register|provider|tool|route|handler)\b/i.test(callee)) {
+      return true;
+    }
+    // Framework-resolved edges often indicate registry patterns
+    if (edge.resolvedBy === 'framework') {
+      return true;
+    }
+    return false;
+  }
+
+  private addRec(recs: string[], seen: Set<string>, rec: string): void {
+    const key = this.normalizeRecKey([rec])[0]!;
+    if (!seen.has(key)) {
+      seen.add(key);
+      recs.push(rec);
+    }
+  }
+
+  private normalizeRecKey(recs: string[]): string[] {
+    return recs.map((r) => r.replace(/^[-•]\s*/, '').trim());
   }
 
   private normalizeOptions(options: TraceOptions): Required<TraceOptions> {

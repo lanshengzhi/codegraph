@@ -285,6 +285,7 @@ Use CodeGraph directly for structural exploration: `codegraph_context` for orien
 | `codegraph_files` / `codegraph_status` | Inspect indexed files and index health |
 | `codegraph_field_sites` | Find static read/write/construction/mapping hints for a field/key |
 | `codegraph_import_candidates` | Inspect static workspace package import candidates |
+| `codegraph_registry_candidates` | List registry candidates (provider, tool, extension, route, handler) |
 
 ### If `.codegraph/` does NOT exist
 
@@ -413,6 +414,7 @@ When running as an MCP server, CodeGraph exposes these tools to Claude Code:
 | `codegraph_status` | Check index health and statistics. Pass `detail: "coverage"` for indexed-source boundary explanations (pending changes, extraction errors, unresolved refs, workspace/alias summaries). Pass `checkFilesystem: true` to compare the index against on-disk source files. |
 | `codegraph_field_sites` | Find read, write, object-construction, and mapping-hint sites for a field/key name in TS/JS files (static AST hints, not full dataflow) |
 | `codegraph_import_candidates` | List workspace package import candidates for a specifier (e.g. `@scope/pkg` or `@scope/pkg/subpath`). Returns source entry candidates with evidence, confidence, and indexed status; pass `symbol` to chase through barrel re-export chains. Static candidates only — not a complete Node/TypeScript resolver. |
+| `codegraph_registry_candidates` | List static registry/resolver candidates (provider, tool, extension, route, handler) from AST pattern matching. Detects object-literal registries, Map constructors, `.set()` registrations, register-like calls, and definition arrays. Each candidate carries evidence, confidence, source range, and handler node resolution. Static only — not runtime branch proof. |
 
 Search and node results include copyable handles such as `nodeId=...`, `qualifiedName=...`, and `range=src/file.ts:10-20`. Pass those back to `codegraph_node`, `codegraph_callers`, `codegraph_callees`, `codegraph_impact`, or `codegraph_trace` as `nodeId`, `qualifiedName`, `path`+`line`, or `fileLine`. For long TS/JS functions, `codegraph_node({ nodeId, detail: "structure" })` returns static AST navigation sections (control flow, key callsites, construction/returns) with exact ranges and caveats; it is not runtime proof or an LLM summary. Trace output may highlight max-depth frontiers, indexed dead ends, metadata-not-recorded edges, or low-evidence/static framework boundaries with exact follow-up handles; these are static graph caveats, not runtime proof.
 

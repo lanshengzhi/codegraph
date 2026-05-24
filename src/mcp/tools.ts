@@ -29,6 +29,7 @@ import type {
   FieldSite,
   FieldSitesResult,
   WorkspaceImportCandidatesResult,
+  RegistryCandidatesResult,
 } from '../types';
 import { formatNodeHandle, matchesSymbol as nodeMatchesSymbol } from '../addressability/format';
 import { createHash } from 'crypto';
@@ -700,6 +701,43 @@ export const tools: ToolDefinition[] = [
       required: ['specifier'],
     },
   },
+  {
+    name: 'registry_candidates',
+    description: 'List static registry/resolver candidates (provider, tool, extension, route, handler) discovered from indexed TypeScript/JavaScript files via AST pattern matching. Detects object-literal registries, Map constructors, .set() registrations, register-like calls, and definition arrays. Produces evidence, confidence, source ranges, and handler resolution where possible. Static candidates only — not runtime branch proof. Runtime config or dynamic key selection chooses the active implementation at runtime.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description: 'Registry name, handler text, file term, or broad query to search for.',
+        },
+        key: {
+          type: 'string',
+          description: 'Exact runtime key to match (e.g., "anthropic", "toolName", "/api/chat").',
+        },
+        kind: {
+          type: 'string',
+          description: 'Filter by registry kind (default: "all").',
+          enum: ['provider', 'tool', 'extension', 'route', 'handler', 'all'],
+        },
+        scopePath: {
+          type: 'string',
+          description: 'Limit search to files under this relative path prefix.',
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum candidates to return (default: 50, clamp 1..200).',
+          default: 50,
+        },
+        includeTests: {
+          type: 'boolean',
+          description: 'Include test/fixture files (default: true; they are lower-ranked and labeled).',
+          default: true,
+        },
+        projectPath: projectPathProperty,
+      },
+    },
+  },
 ];
 
 /**
@@ -952,6 +990,8 @@ export class ToolHandler {
           return await this.handleFieldSites(args);
         case 'import_candidates':
           return await this.handleImportCandidates(args);
+        case 'registry_candidates':
+          return await this.handleRegistryCandidates(args);
         default:
           return this.errorResult(`Unknown tool: ${toolName}`);
       }
@@ -2265,6 +2305,163 @@ export class ToolHandler {
       for (const r of result.recommendations) {
         lines.push(`- ${r}`);
       }
+    }
+
+    return lines.join('\n');
+  }
+
+  /**
+   * Handle codegraph_registry_candidates — registry/resolver candidates
+   */
+  private async handleRegistryCandidates(args: Record<string, unknown>): Promise<ToolResult> {
+    const query = args.query !== undefined ? this.validateString(args.query, 'query', 500) : undefined;
+    if (typeof query === 'object') return query;
+
+    const key = args.key !== undefined ? this.validateString(args.key, 'key', 500) : undefined;
+    if (typeof key === 'object') return key;
+
+    if (typeof key === 'string' && key.includes('\n')) {
+      return this.errorResult('key must not contain newlines');
+    }
+
+    const kind = args.kind as string | undefined;
+    if (kind !== undefined && !['provider', 'tool', 'extension', 'route', 'handler', 'all'].includes(kind)) {
+      return this.errorResult(`Invalid kind: "${kind}". Use one of: provider, tool, extension, route, handler, all`);
+    }
+
+    const scopePath = args.scopePath !== undefined ? this.validateString(args.scopePath, 'scopePath', 500) : undefined;
+    if (typeof scopePath === 'object') return scopePath;
+
+    const limit = args.limit != null ? clamp(args.limit as number, 1, 200) : 50;
+    const includeTests = args.includeTests !== false;
+
+    const cg = this.getCodeGraph(args.projectPath as string | undefined);
+    const result = await cg.getRegistryCandidates({
+      query: query as string | undefined,
+      key: key as string | undefined,
+      kind: kind as RegistryCandidatesResult['kind'] | undefined,
+      scopePath: scopePath as string | undefined,
+      limit,
+      includeTests,
+    });
+    const formatted = this.formatRegistryCandidates(result);
+    return this.textResult(this.truncateOutput(formatted));
+  }
+
+  /**
+   * Format a RegistryCandidatesResult into markdown for MCP output
+   */
+  private formatRegistryCandidates(result: RegistryCandidatesResult): string {
+    const lines: string[] = [];
+
+    const headerParts: string[] = [];
+    if (result.kind && result.kind !== 'all') headerParts.push(`kind: ${result.kind}`);
+    if (result.query) headerParts.push(`query: ${result.query}`);
+    if (result.key) headerParts.push(`key: ${result.key}`);
+    const header = headerParts.length > 0 ? ` (${headerParts.join(', ')})` : '';
+    lines.push(`## Registry candidates${header}`);
+    lines.push('');
+    lines.push(
+      '> Static registry/resolver candidates only. Runtime config/key selects one branch; CodeGraph does not choose a unique runtime implementation.'
+    );
+    lines.push('');
+
+    if (result.status !== 'available' && result.status !== 'partial') {
+      lines.push(`Status: ${result.status}`);
+      if (result.caveats.length > 0) {
+        for (const c of result.caveats) {
+          lines.push(`- ${c}`);
+        }
+      }
+      lines.push('');
+    }
+
+    if (result.candidates.length === 0) {
+      if (result.status === 'available' || result.status === 'partial') {
+        lines.push('No candidates found.');
+      }
+    } else {
+      // Group candidates by registryName
+      const grouped = new Map<string, RegistryCandidatesResult['candidates']>();
+      for (const c of result.candidates) {
+        const groupKey = c.registryName || c.range.path;
+        const existing = grouped.get(groupKey) || [];
+        existing.push(c);
+        grouped.set(groupKey, existing);
+      }
+
+      for (const [groupName, groupCandidates] of grouped) {
+        const filePath = groupCandidates[0]?.range.path || '';
+        lines.push(`### ${groupName} (${filePath})`);
+        lines.push('');
+
+        for (const c of groupCandidates) {
+          const meta = [
+            `evidence=${c.evidence}`,
+            `confidence=${c.confidence}`,
+          ];
+          if (c.isDynamicKey) meta.push('dynamic-key');
+          if (c.isTestOrFixture) meta.push('test/fixture');
+
+          const handlerInfo = c.handlerText ? ` -> ${c.handlerText}` : '';
+          lines.push(`- key="${c.keyText ?? '(unknown)'}"${handlerInfo}`);
+          lines.push(`  ${meta.join(' ')} range=${c.range.path}:${c.range.startLine}:${c.range.startColumn ?? 0}-${c.range.endLine}:${c.range.endColumn ?? 0}`);
+
+          if (c.handlerNode) {
+            const n = c.handlerNode;
+            lines.push(`  handler: ${n.name} nodeId=${n.nodeId} range=${n.path}:${n.startLine}-${n.endLine}`);
+          }
+          if (c.handlerAlternatives && c.handlerAlternatives.length > 0) {
+            lines.push(`  handler ambiguous alternatives:`);
+            for (const alt of c.handlerAlternatives.slice(0, 5)) {
+              lines.push(`    - ${alt.name} (${alt.kind}) nodeId=${alt.nodeId} range=${alt.path}:${alt.startLine}-${alt.endLine}`);
+            }
+            if (c.handlerAlternatives.length > 5) {
+              lines.push(`    - ... and ${c.handlerAlternatives.length - 5} more`);
+            }
+          }
+          if (c.routePath) {
+            lines.push(`  route path: ${c.routePath}`);
+          }
+          if (c.note) {
+            lines.push(`  note: ${c.note}`);
+          }
+        }
+        lines.push('');
+      }
+    }
+
+    if (result.omittedCandidates > 0) {
+      lines.push(`... ${result.omittedCandidates} more candidate(s) omitted.`);
+      lines.push('');
+    }
+
+    // Stats
+    lines.push(`Searched files: ${result.searchedFiles}, parsed: ${result.parsedFiles}`);
+
+    if (Object.keys(result.skippedSummary).length > 0) {
+      const skipParts: string[] = [];
+      for (const [reason, count] of Object.entries(result.skippedSummary)) {
+        skipParts.push(`${reason}: ${count}`);
+      }
+      lines.push(`Skipped: ${skipParts.join(', ')}`);
+    }
+    lines.push('');
+
+    if (result.caveats.length > 0) {
+      lines.push('### Caveats');
+      for (const c of result.caveats) {
+        lines.push(`- ${c}`);
+      }
+      lines.push('');
+    }
+
+    if (result.recommendations.length > 0) {
+      lines.push('### Recommended next');
+      for (const r of result.recommendations) {
+        lines.push(`- ${r}`);
+      }
+      lines.push('');
     }
 
     return lines.join('\n');

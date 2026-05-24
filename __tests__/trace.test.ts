@@ -415,6 +415,179 @@ describe.skipIf(!HAS_SQLITE)('GraphTracer edge evidence boundaries', () => {
   });
 });
 
+// =============================================================================
+// CP7 Ecosystem recommendations — import_candidates & registry_candidates
+// =============================================================================
+describe.skipIf(!HAS_SQLITE)('GraphTracer CP7 ecosystem recommendations', () => {
+  it('recommends import_candidates for an imports edge with bare specifier calleeText', () => {
+    const root = tmpRoot();
+    const db = DatabaseConnection.initialize(path.join(root, 'test.db'));
+    const queries = new QueryBuilder(db.getDb());
+    const entry = makeTraceNode('entry', 'entry', 1);
+    const target = makeTraceNode('target', 'target', 5);
+    queries.insertNode(entry);
+    queries.insertNode(target);
+    queries.insertEdge({
+      source: entry.id,
+      target: target.id,
+      kind: 'imports',
+      line: 2,
+      metadata: {
+        calleeText: '@scope/pkg',
+        confidence: 0.95,
+        resolvedBy: 'exact-match',
+      },
+    });
+
+    const result = new GraphTracer(queries).trace(entry, [target], { maxDepth: 1, edgeKinds: ['imports'] });
+    db.close();
+    cleanup(root);
+
+    expect(result.paths.length).toBeGreaterThan(0);
+    const text = result.recommendations.join('\n');
+    expect(text).toContain('codegraph_import_candidates');
+    expect(text).toContain('@scope/pkg');
+    // Deduplication: only one import_candidates recommendation
+    const importCount = result.recommendations.filter((r) => r.includes('import_candidates')).length;
+    expect(importCount).toBe(1);
+  });
+
+  it('does not recommend import_candidates for non-bare specifier imports', () => {
+    const root = tmpRoot();
+    const db = DatabaseConnection.initialize(path.join(root, 'test.db'));
+    const queries = new QueryBuilder(db.getDb());
+    const entry = makeTraceNode('entry', 'entry', 1);
+    const target = makeTraceNode('target', 'target', 5);
+    queries.insertNode(entry);
+    queries.insertNode(target);
+    queries.insertEdge({
+      source: entry.id,
+      target: target.id,
+      kind: 'imports',
+      line: 2,
+      metadata: {
+        calleeText: './local-module',
+        confidence: 0.95,
+        resolvedBy: 'exact-match',
+      },
+    });
+
+    const result = new GraphTracer(queries).trace(entry, [target], { maxDepth: 1, edgeKinds: ['imports'] });
+    db.close();
+    cleanup(root);
+
+    expect(result.paths.length).toBeGreaterThan(0);
+    const text = result.recommendations.join('\n');
+    expect(text).not.toContain('codegraph_import_candidates');
+  });
+
+  it('recommends registry_candidates for property-call edge with register keyword', () => {
+    const root = tmpRoot();
+    const db = DatabaseConnection.initialize(path.join(root, 'test.db'));
+    const queries = new QueryBuilder(db.getDb());
+    const entry = makeTraceNode('entry', 'entry', 1);
+    const target = makeTraceNode('target', 'target', 5);
+    queries.insertNode(entry);
+    queries.insertNode(target);
+    queries.insertEdge({
+      source: entry.id,
+      target: target.id,
+      kind: 'calls',
+      line: 3,
+      metadata: {
+        sourceEvidence: 'property-call',
+        propertyText: 'register',
+        receiverText: 'registry',
+        confidence: 0.9,
+        resolvedBy: 'exact-match',
+      },
+    });
+
+    const result = new GraphTracer(queries).trace(entry, [target], { maxDepth: 1, edgeKinds: ['calls'] });
+    db.close();
+    cleanup(root);
+
+    expect(result.paths.length).toBeGreaterThan(0);
+    const text = result.recommendations.join('\n');
+    expect(text).toContain('codegraph_registry_candidates');
+    // Deduplication: only one registry_candidates recommendation
+    const regCount = result.recommendations.filter((r) => r.includes('registry_candidates')).length;
+    expect(regCount).toBe(1);
+  });
+
+  it('recommends registry_candidates for framework-resolved edges', () => {
+    const root = tmpRoot();
+    const db = DatabaseConnection.initialize(path.join(root, 'test.db'));
+    const queries = new QueryBuilder(db.getDb());
+    const entry = makeTraceNode('entry', 'entry', 1);
+    const target = makeTraceNode('target', 'target', 5);
+    queries.insertNode(entry);
+    queries.insertNode(target);
+    queries.insertEdge({
+      source: entry.id,
+      target: target.id,
+      kind: 'calls',
+      line: 4,
+      metadata: {
+        confidence: 0.8,
+        resolvedBy: 'framework',
+        framework: 'express',
+      },
+    });
+
+    const result = new GraphTracer(queries).trace(entry, [target], { maxDepth: 1, edgeKinds: ['calls'] });
+    db.close();
+    cleanup(root);
+
+    expect(result.paths.length).toBeGreaterThan(0);
+    const text = result.recommendations.join('\n');
+    expect(text).toContain('codegraph_registry_candidates');
+  });
+
+  it('deduplicates: only one of each ecosystem tool even with multiple matching edges', () => {
+    const root = tmpRoot();
+    const db = DatabaseConnection.initialize(path.join(root, 'test.db'));
+    const queries = new QueryBuilder(db.getDb());
+    const entry = makeTraceNode('entry', 'entry', 1);
+    const mid = makeTraceNode('mid', 'mid', 3);
+    const target = makeTraceNode('target', 'target', 7);
+    queries.insertNode(entry);
+    queries.insertNode(mid);
+    queries.insertNode(target);
+    // Two edges both matching registry pattern
+    queries.insertEdge({
+      source: entry.id,
+      target: mid.id,
+      kind: 'calls',
+      line: 2,
+      metadata: {
+        sourceEvidence: 'property-call',
+        propertyText: 'registerTool',
+        confidence: 0.9,
+        resolvedBy: 'exact-match',
+      },
+    });
+    queries.insertEdge({
+      source: mid.id,
+      target: target.id,
+      kind: 'calls',
+      line: 5,
+      metadata: {
+        resolvedBy: 'framework',
+        confidence: 0.8,
+      },
+    });
+
+    const result = new GraphTracer(queries).trace(entry, [target], { maxDepth: 2, edgeKinds: ['calls'] });
+    db.close();
+    cleanup(root);
+
+    expect(result.paths.length).toBeGreaterThan(0);
+    const regCount = result.recommendations.filter((r) => r.includes('registry_candidates')).length;
+    expect(regCount).toBe(1);
+  });
+});
+
 describe.skipIf(!HAS_SQLITE)('GraphTracer P1b ranking', () => {
   function withManualTrace<T>(run: (queries: QueryBuilder) => T): T {
     const root = tmpRoot();

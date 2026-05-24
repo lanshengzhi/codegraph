@@ -43,6 +43,7 @@ Use codegraph for **structural** questions — what calls what, what would break
 | "Is the index healthy?" | \`codegraph_status\` |
 | "Where is field/key X written, read, or mapped?" | \`codegraph_field_sites\` (static AST hints; not full dataflow or runtime proof) |
 | "Which workspace package file does import X resolve to?" | \`codegraph_import_candidates\` (static workspace package candidates; not runtime proof) |
+| "What provider/tool/route registries exist?" | \`codegraph_registry_candidates\` (static AST pattern matching; not runtime branch proof) |
 
 ### Rules of thumb
 
@@ -57,6 +58,9 @@ Use codegraph for **structural** questions — what calls what, what would break
 - **Index lag**: the file watcher debounces ~500ms behind writes; don't re-query immediately after editing a file in the same turn.
 - **Don't use CodeGraph as a git diff tool.** For current working-tree changes, run \`git status\` / \`git diff\` first, then use codegraph handles/tools on the changed symbols for structural impact.
 - **Field sites are static hints, not dataflow**. \`codegraph_field_sites\` finds exact identifier/string-literal matches for reads, writes, object construction, destructuring, and syntax-level mapping hints in TS/JS files. It does not trace aliases, interprocedural flow, or prove runtime payload reach. A no-match only means the exact string wasn't found — dynamic or computed keys are out of scope.
+- **Workspace import candidates are static, not a resolver**. \`codegraph_import_candidates\` lists static workspace package entry candidates (exports, main, types, conventions, dist→src heuristics) with evidence and confidence labels. It is not a complete Node/TypeScript resolver.
+- **Registry candidates are static, not runtime**. \`codegraph_registry_candidates\` finds object-literal, Map, .set(), register-call, and definition-array patterns in TS/JS files via AST analysis. Dynamic/computed keys are low-confidence. The tool does not prove which registry key or handler is active at runtime.
+- **Status coverage is indexed source only**. \`codegraph_status({ detail: "coverage" })\` reports indexed source coverage (pending changes, extraction errors, unresolved refs, workspace/alias summaries), not a complete filesystem inventory. Use \`git status\`, \`find\`, or \`read\` for filesystem-level checks.
 
 ### If \`.codegraph/\` doesn't exist
 
