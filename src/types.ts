@@ -755,6 +755,112 @@ export interface SearchResult {
 }
 
 // =============================================================================
+// Field Sites Types
+// =============================================================================
+
+export type FieldSiteStatus =
+  | 'available'
+  | 'partial'
+  | 'no-matches'
+  | 'no-searchable-files'
+  | 'all-skipped'
+  | 'invalid-field'
+  | 'parser-unavailable';
+
+export type FieldSiteKind =
+  | 'assignment'
+  | 'property-read'
+  | 'object-literal-key'
+  | 'destructuring'
+  | 'return-object-field'
+  | 'field-mapping';
+
+export type FieldSiteCategory = 'write' | 'read' | 'construction' | 'mapping';
+
+export type FieldSiteAccess = 'read' | 'write' | 'readwrite';
+
+export type FieldSiteEvidence =
+  | 'exact-identifier'
+  | 'string-literal-key'
+  | 'computed-string-literal-key'
+  | 'shorthand-key'
+  | 'destructuring-pattern'
+  | 'mapping-heuristic';
+
+export type FieldSiteSkippedReason =
+  | 'unsupported-language'
+  | 'source-unavailable'
+  | 'source-too-large'
+  | 'source-stale'
+  | 'parser-unavailable'
+  | 'parse-error'
+  | 'outside-root'
+  | 'too-many-files';
+
+export type FieldSiteCategoryCounts = Partial<Record<FieldSiteCategory, number>>;
+export type FieldSiteSkippedSummary = Partial<Record<FieldSiteSkippedReason, number>>;
+
+export interface FieldSite {
+  field: string;
+  kind: FieldSiteKind;
+  category: FieldSiteCategory;
+  access: FieldSiteAccess;
+  evidence: FieldSiteEvidence;
+  range: SourceRange;
+  label: string;
+  receiverText?: string;
+  propertyText?: string;
+  objectKeys?: string[];
+  targetKey?: string;
+  sourceField?: string;
+  enclosingNode?: NodeHandle;
+  note?: string;
+  isTestOrFixture?: boolean;
+}
+
+export interface FieldSiteSkippedFile {
+  path: string;
+  language?: Language;
+  reason: FieldSiteSkippedReason;
+  detail?: string;
+}
+
+export interface FieldSitesOptions {
+  scopePath?: string;
+  limit?: number;
+  includeTests?: boolean;
+  maxSourceBytes?: number;
+  maxLabelChars?: number;
+  maxObjectKeys?: number;
+  maxSkippedFileSamples?: number;
+  /** Internal/test safety valve for query-time parsing; MCP does not expose this. */
+  maxFilesToParse?: number;
+}
+
+export interface FieldSitesResult {
+  status: FieldSiteStatus;
+  field: string;
+  scopePath?: string;
+  includeTests: boolean;
+  limit: number;
+  sites: FieldSite[];
+  searchedFiles: number;
+  searchableFiles: number;
+  parsedFiles: number;
+  matchedFiles: number;
+  skippedFileCount: number;
+  skippedFilesOmitted: number;
+  skippedSummary: FieldSiteSkippedSummary;
+  skippedFiles: FieldSiteSkippedFile[];
+  totalSites: number;
+  totalSitesByCategory: FieldSiteCategoryCounts;
+  omittedSites: number;
+  omittedSitesByCategory: FieldSiteCategoryCounts;
+  caveats: string[];
+  recommendations: string[];
+}
+
+// =============================================================================
 // Context Types
 // =============================================================================
 

@@ -39,6 +39,7 @@ export function getCodeGraphPermissions(): string[] {
     'mcp__codegraph__codegraph_node',
     'mcp__codegraph__codegraph_trace',
     'mcp__codegraph__codegraph_status',
+    'mcp__codegraph__codegraph_field_sites',
   ];
 }
 

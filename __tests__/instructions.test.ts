@@ -24,6 +24,13 @@ describe('CodeGraph instructions', () => {
     expect(SERVER_INSTRUCTIONS).toContain('not runtime proof');
   });
 
+  it('mentions field sites and its caveats in server instructions', () => {
+    expect(SERVER_INSTRUCTIONS).toContain('codegraph_field_sites');
+    expect(SERVER_INSTRUCTIONS).toContain('not full dataflow or runtime proof');
+    expect(SERVER_INSTRUCTIONS).toContain('dynamic/computed/alias cases');
+    expect(SERVER_INSTRUCTIONS).toContain('Provider payload');
+  });
+
   it('mentions trace, precise locators, edge evidence, and boundaries in installed agent instructions', () => {
     expect(INSTRUCTIONS_TEMPLATE).toContain('codegraph_trace');
     expect(INSTRUCTIONS_TEMPLATE).toContain('nodeId');
@@ -40,5 +47,12 @@ describe('CodeGraph instructions', () => {
     expect(INSTRUCTIONS_TEMPLATE).toContain('long TS/JS function');
     expect(INSTRUCTIONS_TEMPLATE).toContain('structure summary');
     expect(INSTRUCTIONS_TEMPLATE).toContain('not runtime proof');
+  });
+
+  it('mentions field sites and its caveats in installed agent instructions', () => {
+    expect(INSTRUCTIONS_TEMPLATE).toContain('codegraph_field_sites');
+    expect(INSTRUCTIONS_TEMPLATE).toContain('not full dataflow or runtime proof');
+    expect(INSTRUCTIONS_TEMPLATE).toContain('dynamic or computed keys');
+    expect(INSTRUCTIONS_TEMPLATE).toContain('Field sites are static hints, not dataflow');
   });
 });

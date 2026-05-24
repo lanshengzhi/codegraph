@@ -27,6 +27,8 @@ import {
   TraceResult,
   NodeStructureOptions,
   NodeStructureResult,
+  FieldSitesOptions,
+  FieldSitesResult,
 } from './types';
 import { DatabaseConnection, getDatabasePath } from './db';
 import { QueryBuilder } from './db/queries';
@@ -63,6 +65,7 @@ import {
 import { Mutex, FileLock } from './utils';
 import { FileWatcher, WatchOptions } from './sync';
 import { NodeStructureAnalyzer } from './structure/node-structure';
+import { FieldSitesAnalyzer } from './structure/field-sites';
 
 // Re-export types for consumers
 export * from './types';
@@ -632,6 +635,103 @@ export class CodeGraph {
     const analyzer = new NodeStructureAnalyzer(this.projectRoot);
     const fileRecord = this.getFile(node.filePath);
     return analyzer.analyze(node, fileRecord, options);
+  }
+
+  /**
+   * Find field/key read/write/construction/mapping sites across indexed TS/JS files.
+   * Query-time only; no DB migration.
+   */
+  async getFieldSites(field: string, options?: FieldSitesOptions): Promise<FieldSitesResult> {
+    // Validate scopePath: must be relative, no escapes
+    if (options?.scopePath) {
+      const sp = options.scopePath;
+      if (path.isAbsolute(sp)) {
+        return {
+          status: 'invalid-field',
+          field,
+          scopePath: sp,
+          includeTests: options?.includeTests !== false,
+          limit: options?.limit ?? 80,
+          sites: [],
+          searchedFiles: 0,
+          searchableFiles: 0,
+          parsedFiles: 0,
+          matchedFiles: 0,
+          skippedFileCount: 0,
+          skippedFilesOmitted: 0,
+          skippedSummary: {},
+          skippedFiles: [],
+          totalSites: 0,
+          totalSitesByCategory: {},
+          omittedSites: 0,
+          omittedSitesByCategory: {},
+          caveats: ['scopePath must be a relative path, not absolute.'],
+          recommendations: ['Provide a relative path prefix (e.g., "src/providers").'],
+        };
+      }
+      if (sp.includes('..')) {
+        return {
+          status: 'invalid-field',
+          field,
+          scopePath: sp,
+          includeTests: options?.includeTests !== false,
+          limit: options?.limit ?? 80,
+          sites: [],
+          searchedFiles: 0,
+          searchableFiles: 0,
+          parsedFiles: 0,
+          matchedFiles: 0,
+          skippedFileCount: 0,
+          skippedFilesOmitted: 0,
+          skippedSummary: {},
+          skippedFiles: [],
+          totalSites: 0,
+          totalSitesByCategory: {},
+          omittedSites: 0,
+          omittedSitesByCategory: {},
+          caveats: ['scopePath must not contain "..".'],
+          recommendations: ['Provide a relative path prefix without path escapes.'],
+        };
+      }
+    }
+
+    const files = this.getFiles();
+    let excludedTestOrFixtureFiles = 0;
+    const scoped = files.filter((f) => {
+      if (options?.scopePath) {
+        const sp = options.scopePath;
+        if (f.path !== sp && !f.path.startsWith(sp + '/')) return false;
+      }
+      if (options?.includeTests === false && this.isTestOrFixturePath(f.path)) {
+        excludedTestOrFixtureFiles++;
+        return false;
+      }
+      return true;
+    });
+
+    const analyzer = new FieldSitesAnalyzer(this.projectRoot);
+    const result = await analyzer.analyze(
+      field,
+      scoped,
+      (path) => this.getNodesInFile(path),
+      options
+    );
+
+    if (options?.includeTests === false && excludedTestOrFixtureFiles > 0 && result.totalSites === 0) {
+      const retry = 'Retry with includeTests: true if test/fixture examples are useful.';
+      if (!result.recommendations.includes(retry)) {
+        result.recommendations.push(retry);
+      }
+    }
+
+    return result;
+  }
+
+  private isTestOrFixturePath(filePath: string): boolean {
+    const lower = filePath.toLowerCase();
+    return /(^|[\\/])(__tests__|__mocks__|tests?|fixtures?|examples?|e2e|specs?|stories|generated)([\\/]|$)/.test(lower)
+      || /\.(test|spec|fixture|example|e2e|stories)\.(ts|tsx|js|jsx)$/.test(lower)
+      || lower.includes('.generated.');
   }
 
   /**

@@ -403,6 +403,7 @@ When running as an MCP server, CodeGraph exposes these tools to Claude Code:
 | `codegraph_trace` | Trace likely static graph paths from an entry locator to a target symbol/query/locator, including boundary / low-evidence caveats when recorded |
 | `codegraph_files` | Get indexed file structure (faster than filesystem scanning) |
 | `codegraph_status` | Check index health and statistics |
+| `codegraph_field_sites` | Find read, write, object-construction, and mapping-hint sites for a field/key name in TS/JS files (static AST hints, not full dataflow) |
 
 Search and node results include copyable handles such as `nodeId=...`, `qualifiedName=...`, and `range=src/file.ts:10-20`. Pass those back to `codegraph_node`, `codegraph_callers`, `codegraph_callees`, `codegraph_impact`, or `codegraph_trace` as `nodeId`, `qualifiedName`, `path`+`line`, or `fileLine`. For long TS/JS functions, `codegraph_node({ nodeId, detail: "structure" })` returns static AST navigation sections (control flow, key callsites, construction/returns) with exact ranges and caveats; it is not runtime proof or an LLM summary. Trace output may highlight max-depth frontiers, indexed dead ends, metadata-not-recorded edges, or low-evidence/static framework boundaries with exact follow-up handles; these are static graph caveats, not runtime proof.
 

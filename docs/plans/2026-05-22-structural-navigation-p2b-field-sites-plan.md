@@ -3,7 +3,7 @@
 > 关联设计:[`docs/codegraph-structural-navigation-usability-design.md`](../codegraph-structural-navigation-usability-design.md)
 > 拆解路线图:[`2026-05-21-structural-navigation-roadmap.md`](./2026-05-21-structural-navigation-roadmap.md)
 > 前置计划:[`2026-05-22-structural-navigation-p2a-node-structure-plan.md`](./2026-05-22-structural-navigation-p2a-node-structure-plan.md)
-> 状态:draft / ready for TDD implementation
+> 状态:implemented / validated (2026-05-24)
 > 范围:新增按字段 / 属性 / payload key 查找读、写、解构、对象构造、return object 与 mapping hint 的按需结构导航能力;首版支持 TS/JS/TSX/JSX;不做完整 dataflow、alias analysis 或 runtime payload proof。
 
 ---

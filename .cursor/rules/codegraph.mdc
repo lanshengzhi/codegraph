@@ -23,6 +23,7 @@ Use codegraph for **structural** questions — what calls what, what would break
 | "See several related symbols' source at once" | `codegraph_explore` (file headers may include static relevance reasons) |
 | "What files exist under path/" | `codegraph_files` |
 | "Is the index healthy?" | `codegraph_status` |
+| "Where is field/key X written, read, or mapped?" | `codegraph_field_sites` (static AST hints; not full dataflow or runtime proof) |
 
 ### Rules of thumb
 
@@ -35,6 +36,7 @@ Use codegraph for **structural** questions — what calls what, what would break
 - **Don't chain `codegraph_search` + `codegraph_node`** when you just want context — `codegraph_context` is one call.
 - **Don't loop `codegraph_node` over many symbols** — one `codegraph_explore` call returns several symbols' source grouped in a single capped call, while each separate node/Read call re-reads the whole context and costs far more.
 - **Index lag**: the file watcher debounces ~500ms behind writes; don't re-query immediately after editing a file in the same turn.
+- **Field sites are static hints, not dataflow**. `codegraph_field_sites` finds exact identifier/string-literal matches for reads, writes, object construction, destructuring, and syntax-level mapping hints in TS/JS files. It does not trace aliases, interprocedural flow, or prove runtime payload reach. A no-match only means the exact string wasn't found — dynamic or computed keys are out of scope.
 
 ### If `.codegraph/` doesn't exist
 

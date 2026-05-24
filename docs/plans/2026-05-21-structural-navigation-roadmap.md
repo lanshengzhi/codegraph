@@ -186,7 +186,7 @@ codegraph_node({ nodeId, detail: "structure" })
 
 ### P2b：字段读写与对象构造线索
 
-**状态：** draft plan written (2026-05-22)。详见 [`2026-05-22-structural-navigation-p2b-field-sites-plan.md`](./2026-05-22-structural-navigation-p2b-field-sites-plan.md) 的测试驱动实施计划。
+**状态：** implemented / validated (2026-05-24)。详见 [`2026-05-22-structural-navigation-p2b-field-sites-plan.md`](./2026-05-22-structural-navigation-p2b-field-sites-plan.md)。
 
 **目标：** 新增按字段 / payload key 定位读写、对象构造、映射位置的线索能力。
 

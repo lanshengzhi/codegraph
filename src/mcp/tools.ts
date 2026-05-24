@@ -26,6 +26,8 @@ import type {
   NodeStructureItem,
   NodeStructureResult,
   SourceRange,
+  FieldSite,
+  FieldSitesResult,
 } from '../types';
 import { formatNodeHandle, matchesSymbol as nodeMatchesSymbol } from '../addressability/format';
 import { createHash } from 'crypto';
@@ -601,6 +603,35 @@ export const tools: ToolDefinition[] = [
       },
     },
   },
+  {
+    name: 'codegraph_field_sites',
+    description: 'Find read, write, object-construction, destructuring, return-object, and mapping-hint sites for a field/key name (string literal). Returns static AST-level navigation hints grouped by category (writes → mapping hints → object construction → reads) with exact ranges, enclosing handles, and next-step recommendations. These are syntax-level clues — not full dataflow, alias analysis, or runtime payload proof.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        field: {
+          type: 'string',
+          description: 'Exact field / key name (e.g., "systemPrompt", "tools", "messages")',
+        },
+        scopePath: {
+          type: 'string',
+          description: 'Restrict search to files under this path prefix (e.g., "src/providers")',
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum sites to return (default: 80, clamp 1..300)',
+          default: 80,
+        },
+        includeTests: {
+          type: 'boolean',
+          description: 'Include test/fixture files (default: true; they are lower-ranked and labeled)',
+          default: true,
+        },
+        projectPath: projectPathProperty,
+      },
+      required: ['field'],
+    },
+  },
 ];
 
 /**
@@ -847,6 +878,8 @@ export class ToolHandler {
           return await this.handleStatus(args);
         case 'codegraph_files':
           return await this.handleFiles(args);
+        case 'codegraph_field_sites':
+          return await this.handleFieldSites(args);
         default:
           return this.errorResult(`Unknown tool: ${toolName}`);
       }
@@ -1703,6 +1736,224 @@ export class ToolHandler {
     }
 
     return this.textResult(this.truncateOutput(output));
+  }
+
+  /**
+   * Handle codegraph_field_sites — find read/write/construction/mapping sites for a field/key
+   */
+  private async handleFieldSites(args: Record<string, unknown>): Promise<ToolResult> {
+    const field = this.validateFieldName(args.field);
+    if (typeof field !== 'string') return field;
+
+    const scopePath = args.scopePath as string | undefined;
+    if (scopePath !== undefined) {
+      if (typeof scopePath !== 'string' || scopePath.length === 0) {
+        return this.errorResult('scopePath must be a non-empty string');
+      }
+      if (scopePath.includes('..')) {
+        return this.errorResult('scopePath must not contain ".."');
+      }
+      if (scopePath.startsWith('/') || /^[A-Za-z]:[\\/]/.test(scopePath)) {
+        return this.errorResult('scopePath must be a relative path, not absolute');
+      }
+    }
+
+    let limit = 80;
+    if (args.limit !== undefined) {
+      if (typeof args.limit !== 'number' || !Number.isFinite(args.limit) || args.limit < 1) {
+        return this.errorResult('limit must be a positive number');
+      }
+      limit = clamp(args.limit as number, 1, 300);
+    }
+
+    let includeTests = true;
+    if (args.includeTests !== undefined) {
+      if (typeof args.includeTests !== 'boolean') {
+        return this.errorResult('includeTests must be a boolean');
+      }
+      includeTests = args.includeTests as boolean;
+    }
+
+    const cg = this.getCodeGraph(args.projectPath as string | undefined);
+    const result = await cg.getFieldSites(field, { scopePath, limit, includeTests });
+    const formatted = this.formatFieldSites(result);
+    return this.textResult(this.truncateOutput(formatted));
+  }
+
+  /**
+   * Validate the field parameter: non-empty, no newlines, max 120 chars
+   */
+  private validateFieldName(value: unknown): string | ToolResult {
+    if (typeof value !== 'string' || value.trim().length === 0) {
+      return this.errorResult('field must be a non-empty string');
+    }
+    const trimmed = value.trim();
+    if (trimmed.includes('\n') || trimmed.includes('\r')) {
+      return this.errorResult('field must not contain newlines');
+    }
+    if (trimmed.length > 120) {
+      return this.errorResult(`field exceeds maximum length of 120 characters (got ${trimmed.length})`);
+    }
+    return trimmed;
+  }
+
+  /**
+   * Format a FieldSitesResult into markdown for MCP output
+   */
+  private formatFieldSites(result: FieldSitesResult): string {
+    const lines: string[] = [];
+
+    // Title
+    lines.push(`## Field sites: \`${result.field}\``, '');
+
+    // Fixed caveat
+    const fixedCaveat = 'Field sites are static AST navigation hints, not full dataflow, alias analysis, or runtime payload proof.';
+    lines.push(`> ${fixedCaveat}`);
+
+    // Additional caveats from the result
+    for (const c of result.caveats) {
+      if (c === fixedCaveat) continue;
+      lines.push(`> ${c}`);
+    }
+
+    lines.push('');
+
+    // Metadata line
+    const scopeInfo = result.scopePath ? ` (scope: ${result.scopePath})` : '';
+    lines.push(`Searched indexed files: ${result.searchedFiles}${scopeInfo}`);
+    lines.push(`Searchable TS/JS files: ${result.searchableFiles}; parsed files: ${result.parsedFiles}; matched files: ${result.matchedFiles}`);
+
+    // Category stats
+    const catParts: string[] = [];
+    for (const cat of ['write', 'mapping', 'construction', 'read'] as const) {
+      const total = result.totalSitesByCategory[cat] ?? 0;
+      if (total > 0) {
+        const short: Record<string, string> = { write: 'writes', mapping: 'mappings', construction: 'construction', read: 'reads' };
+        catParts.push(`${short[cat]} ${total}`);
+      }
+    }
+    if (catParts.length > 0) {
+      lines.push(`Sites: ${result.totalSites} total exact (${catParts.join(', ')}; showing ${result.sites.length})`);
+    } else {
+      lines.push(`Sites: ${result.totalSites} total exact`);
+    }
+
+    // Skipped summary
+    if (result.skippedFileCount > 0) {
+      const summaryParts: string[] = [];
+      for (const [reason, count] of Object.entries(result.skippedSummary)) {
+        if (count && count > 0) summaryParts.push(`${reason}=${count}`);
+      }
+      if (summaryParts.length > 0) {
+        const omittedNote = result.skippedFilesOmitted > 0
+          ? ` (showing ${result.skippedFiles.length} skipped-file samples${result.skippedFilesOmitted > 0 ? `, ${result.skippedFilesOmitted} omitted` : ''})`
+          : '';
+        lines.push(`Skipped summary: ${summaryParts.join(', ')}${omittedNote}`);
+      }
+      if (result.skippedFiles.length > 0) {
+        lines.push('Skipped file samples:');
+        for (const skipped of result.skippedFiles) {
+          const lang = skipped.language ? ` (${skipped.language})` : '';
+          const detail = skipped.detail ? ` — ${skipped.detail}` : '';
+          lines.push(`- ${skipped.reason} ${skipped.path}${lang}${detail}`);
+        }
+      }
+    }
+
+    lines.push('');
+
+    // Show status when not cleanly available
+    if (result.status === 'partial') {
+      lines.push(`Status: ${result.status} — search was incomplete; some supported files were skipped or results were truncated.`);
+      lines.push('');
+    } else if (result.status !== 'available') {
+      lines.push(`Status: ${result.status}`);
+      if (result.recommendations.length > 0) {
+        lines.push('', '### Recommended next');
+        for (const rec of result.recommendations) lines.push(`- ${rec}`);
+      }
+      return lines.join('\n');
+    }
+
+    // Group sites by category in display order
+    const displayOrder: Array<{ category: string; title: string; sites: FieldSite[] }> = [
+      { category: 'write', title: 'Writes', sites: [] },
+      { category: 'mapping', title: 'Mapping hints', sites: [] },
+      { category: 'construction', title: 'Object construction', sites: [] },
+      { category: 'read', title: 'Reads', sites: [] },
+    ];
+
+    for (const site of result.sites) {
+      const group = displayOrder.find((g) => g.category === site.category);
+      if (group) group.sites.push(site);
+    }
+
+    const sectionCap = 40;
+
+    for (const group of displayOrder) {
+      if (group.sites.length === 0) continue;
+      lines.push(`### ${group.title}`);
+
+      const shown = group.sites.slice(0, sectionCap);
+      for (const site of shown) {
+        lines.push(...this.formatFieldSite(site));
+      }
+
+      if (group.sites.length > shown.length) {
+        const omitted = group.sites.length - shown.length;
+        const omittedInGroup = result.omittedSitesByCategory[group.category as keyof typeof result.omittedSitesByCategory] ?? 0;
+        if (omittedInGroup > 0) {
+          lines.push(`- ... ${omitted} more sites omitted in this section (${omittedInGroup} total omitted by limit)`);
+        } else {
+          lines.push(`- ... ${omitted} more sites omitted`);
+        }
+      }
+
+      lines.push('');
+    }
+
+    // Recommendations
+    if (result.recommendations.length > 0) {
+      lines.push('### Recommended next');
+      for (const rec of result.recommendations) lines.push(`- ${rec}`);
+    }
+
+    return lines.join('\n');
+  }
+
+  /**
+   * Format a single FieldSite as one or more markdown lines
+   */
+  private formatFieldSite(site: FieldSite): string[] {
+    const lines: string[] = [];
+
+    // Access annotation for readwrite assignments
+    let accessNote = '';
+    if (site.access === 'readwrite') {
+      accessNote = ', access=readwrite';
+    }
+
+    // Test/fixture label
+    const testLabel = site.isTestOrFixture ? ' [test/fixture]' : '';
+
+    // Build the site line
+    const range = this.formatSourceRange(site.range);
+    let line = `- ${site.kind} ${range} — ${site.label}${accessNote}${testLabel}`;
+    lines.push(line);
+
+    // Enclosing node
+    if (site.enclosingNode) {
+      const enc = site.enclosingNode;
+      const encRange = enc.startLine ? `:${enc.startLine}${enc.endLine && enc.endLine !== enc.startLine ? `-${enc.endLine}` : ''}` : '';
+      lines.push(`  enclosing: ${enc.name || enc.qualifiedName || ''} (${enc.kind}) nodeId=${enc.nodeId}${encRange}`);
+    }
+
+    // Mapping note
+    if (site.note) {
+      lines.push(`  note: ${site.note}`);
+    }
+
+    return lines;
   }
 
   private formatFilesNoMatch(pathFilter?: string, pattern?: string): string {
