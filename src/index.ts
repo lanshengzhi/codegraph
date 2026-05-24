@@ -31,6 +31,8 @@ import {
   FieldSitesResult,
   CoverageReportOptions,
   CoverageReport,
+  WorkspaceImportOptions,
+  WorkspaceImportCandidatesResult,
 } from './types';
 import { DatabaseConnection, getDatabasePath } from './db';
 import { QueryBuilder } from './db/queries';
@@ -69,6 +71,10 @@ import { FileWatcher, WatchOptions } from './sync';
 import { NodeStructureAnalyzer } from './structure/node-structure';
 import { FieldSitesAnalyzer } from './structure/field-sites';
 import { buildCoverageReport } from './ecosystem/coverage';
+import {
+  getWorkspaceImportCandidates,
+  clearWorkspacePackageCache,
+} from './ecosystem/package-workspace';
 
 // Re-export types for consumers
 export * from './types';
@@ -374,6 +380,7 @@ export class CodeGraph {
         // Cheap and non-blocking; never load-bearing for correctness.
         if (result.success && result.filesIndexed > 0) {
           this.db.runMaintenance();
+          clearWorkspacePackageCache();
         }
 
         return result;
@@ -460,6 +467,7 @@ export class CodeGraph {
         // Refresh planner stats + checkpoint the WAL after bulk writes.
         if (result.filesAdded > 0 || result.filesModified > 0 || result.filesRemoved > 0) {
           this.db.runMaintenance();
+          clearWorkspacePackageCache();
         }
 
         return result;
@@ -601,6 +609,23 @@ export class CodeGraph {
       this.getFiles(),
       this.queries,
       () => this.getChangedFiles(),
+      options
+    );
+  }
+
+  /**
+   * Get workspace import candidates for a package specifier.
+   * Query-time only; no DB schema changes.
+   */
+  getWorkspaceImportCandidates(
+    specifier: string,
+    options?: WorkspaceImportOptions
+  ): WorkspaceImportCandidatesResult {
+    return getWorkspaceImportCandidates(
+      this.projectRoot,
+      this.getFiles(),
+      (path) => this.getNodesInFile(path),
+      specifier,
       options
     );
   }

@@ -1095,3 +1095,77 @@ export interface CoverageReport {
   caveats: string[];
   recommendations: string[];
 }
+
+// =============================================================================
+// Workspace Import Types (P3b)
+// =============================================================================
+
+export type WorkspaceImportStatus =
+  | 'available'
+  | 'no-workspaces'
+  | 'package-not-found'
+  | 'no-candidates'
+  | 'partial'
+  | 'invalid-specifier';
+
+export type WorkspaceImportEvidence =
+  | 'exports-exact'
+  | 'exports-condition'
+  | 'main-field'
+  | 'module-field'
+  | 'types-field'
+  | 'src-index-convention'
+  | 'subpath-convention'
+  | 'dist-to-src-heuristic'
+  | 're-export-chain';
+
+export interface WorkspacePackageInfo {
+  name: string;
+  packageDir: string;
+  packageJsonPath: string;
+  workspacePattern: string;
+  exports?: unknown;
+  main?: string;
+  module?: string;
+  types?: string;
+  typings?: string;
+}
+
+export interface WorkspaceImportCandidate {
+  packageName: string;
+  subpath: string | null;
+  packageDir: string;
+  sourcePath: string;
+  exists: boolean;
+  indexed: boolean;
+  language?: Language;
+  nodeCount?: number;
+  evidence: WorkspaceImportEvidence;
+  confidence: number;
+  conditionPath?: string[];
+  exportField?: string;
+  symbol?: string;
+  symbolNode?: NodeHandle;
+  symbolAlternatives?: NodeHandle[];
+  reExportChain?: Array<{ from: string; to: string; exportedName?: string; originalName?: string }>;
+  note?: string;
+}
+
+export interface WorkspaceImportCandidatesResult {
+  status: WorkspaceImportStatus;
+  specifier: string;
+  symbol?: string;
+  package?: WorkspacePackageInfo;
+  candidates: WorkspaceImportCandidate[];
+  totalCandidates: number;
+  omittedCandidates: number;
+  caveats: string[];
+  recommendations: string[];
+}
+
+export interface WorkspaceImportOptions {
+  symbol?: string;
+  fromPath?: string;
+  limit?: number;
+  includeUnindexed?: boolean;
+}

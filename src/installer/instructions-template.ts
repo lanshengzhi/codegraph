@@ -23,7 +23,7 @@ export const CODEGRAPH_SECTION_END = '<!-- CODEGRAPH_END -->';
 export const INSTRUCTIONS_TEMPLATE = `${CODEGRAPH_SECTION_START}
 ## CodeGraph
 
-This project has a CodeGraph MCP server (\`codegraph_*\` tools) configured. CodeGraph is a tree-sitter-parsed knowledge graph of every symbol, edge, and file. Reads are sub-millisecond and return structural information grep cannot. Results include exact handles (nodeId, qualifiedName, range/file:line/path:line) you can pass to follow-up tools.
+This project has a CodeGraph MCP server configured. In Pi and other global tool gateways, the tools appear with the server prefix (\`codegraph_*\`, e.g. \`codegraph_search\`); raw MCP clients may show the suffix names (\`search\`, \`status\`, ...). CodeGraph is a tree-sitter-parsed knowledge graph of every symbol, edge, and file. Reads are sub-millisecond and return structural information grep cannot. Results include exact handles (nodeId, qualifiedName, range/file:line/path:line) you can pass to follow-up tools.
 
 ### When to prefer codegraph over native search
 
@@ -42,18 +42,20 @@ Use codegraph for **structural** questions — what calls what, what would break
 | "What files exist under path/" | \`codegraph_files\` |
 | "Is the index healthy?" | \`codegraph_status\` |
 | "Where is field/key X written, read, or mapped?" | \`codegraph_field_sites\` (static AST hints; not full dataflow or runtime proof) |
+| "Which workspace package file does import X resolve to?" | \`codegraph_import_candidates\` (static workspace package candidates; not runtime proof) |
 
 ### Rules of thumb
 
 - **Answer directly — don't delegate exploration.** For "how does X work" / architecture / trace questions, answer with 2-3 codegraph calls: \`codegraph_context\` first, \`codegraph_trace\` for entry→target paths when needed, then ONE \`codegraph_explore\` for the source of the symbols it surfaces. Codegraph IS the pre-built index, so spawning a separate file-reading sub-task/agent — or running a grep + read loop — repeats work codegraph already did and costs more for the same answer.
 - **Trust codegraph results.** They come from a full AST parse. Do NOT re-verify them with grep — that's slower, less accurate, and wastes context.
 - **Don't grep first** when looking up a symbol by name. \`codegraph_search\` is faster and returns kind + location + signature + exact handles in one call.
-- **Use exact handles once you have them.** Search/node/trace results include nodeId and range; pass nodeId, file:line/fileLine, or path+line directly to \`codegraph_node\`, \`codegraph_callers\`, \`codegraph_callees\`, \`codegraph_impact\`, or \`codegraph_trace\`.
+- **Use exact handles once you have them.** codegraph_search/codegraph_node/codegraph_trace results include nodeId and range; pass nodeId, file:line/fileLine, or path+line directly to \`codegraph_node\`, \`codegraph_callers\`, \`codegraph_callees\`, \`codegraph_impact\`, or \`codegraph_trace\`.
 - **Use structure summaries before reading long functions.** For a long TS/JS function or method, call \`codegraph_node({ nodeId, detail: "structure" })\` to get a static AST structure summary with exact ranges, then use targeted Read or \`includeCode=true\` only where needed. This is navigation guidance, not runtime proof or an LLM summary.
 - **Treat edge evidence, structure summaries, and trace/context/explore ranking as static.** \`codegraph_trace\`, \`codegraph_callers\`, and \`codegraph_callees\` show edge kind, source syntax evidence (such as \`direct-call\`, \`property-call\`, \`constructor-call\`, \`import\`, \`decorator\`, or \`bare-call\`) or resolver fallback (\`name-match\`, \`framework\`, \`fuzzy\`), callsite, provenance, confidence, and resolver when recorded. Trace paths may also show a static score/reason from recorded signals (direct-call ratio, edge confidence, scope, low-evidence, optional/test/generated penalties) plus boundary / low-evidence entries with exact handles to inspect next. \`codegraph_node({ nodeId, detail: "structure" })\` shows AST-derived control-flow syntax, callsites, callback-like hints, and local object/return construction for a single node. \`codegraph_context\` / \`codegraph_explore\` may show relevance reasons from recorded search/graph signals (exact name/path matches, entry-point proximity, generic-name or test/generated penalties). \`not-recorded\` means CodeGraph did not capture that fact; static structure/score/reasons are sorting and reading guidance, not runtime main-path proof or complete semantic proof.
 - **Don't chain \`codegraph_search\` + \`codegraph_node\`** when you just want context — \`codegraph_context\` is one call.
 - **Don't loop \`codegraph_node\` over many symbols** — one \`codegraph_explore\` call returns several symbols' source grouped in a single capped call, while each separate node/Read call re-reads the whole context and costs far more.
 - **Index lag**: the file watcher debounces ~500ms behind writes; don't re-query immediately after editing a file in the same turn.
+- **Don't use CodeGraph as a git diff tool.** For current working-tree changes, run \`git status\` / \`git diff\` first, then use codegraph handles/tools on the changed symbols for structural impact.
 - **Field sites are static hints, not dataflow**. \`codegraph_field_sites\` finds exact identifier/string-literal matches for reads, writes, object construction, destructuring, and syntax-level mapping hints in TS/JS files. It does not trace aliases, interprocedural flow, or prove runtime payload reach. A no-match only means the exact string wasn't found — dynamic or computed keys are out of scope.
 
 ### If \`.codegraph/\` doesn't exist

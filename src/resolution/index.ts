@@ -19,6 +19,7 @@ import {
 import { matchReference } from './name-matcher';
 import { resolveViaImport, extractImportMappings, extractReExports } from './import-resolver';
 import { detectFrameworks } from './frameworks';
+import { getWorkspaceImportCandidates } from '../ecosystem/package-workspace';
 import { loadProjectAliases, type AliasMap } from './path-aliases';
 import { logDebug } from '../errors';
 import type { ReExport } from './types';
@@ -351,6 +352,23 @@ export class ReferenceResolver {
         const reExports = extractReExports(content, language);
         this.reExportCache.set(filePath, reExports);
         return reExports;
+      },
+
+      getWorkspaceImportCandidates: (specifier, options) => {
+        const files = this.queries.getAllFiles();
+        const result = getWorkspaceImportCandidates(
+          this.projectRoot,
+          files,
+          (filePath) => this.context.getNodesInFile(filePath),
+          specifier,
+          { limit: 1, symbol: options?.symbol }
+        );
+        // Defensive: the resolver only needs a single high-confidence candidate.
+        // We re-apply the threshold here even though resolveWorkspaceImport also
+        // checks it, so that callers of this context method get a consistent view.
+        return result.candidates
+          .filter((c) => c.confidence >= 0.8 && c.indexed)
+          .map((c) => ({ sourcePath: c.sourcePath, confidence: c.confidence, indexed: c.indexed }));
       },
     };
   }

@@ -176,6 +176,26 @@ export class PaymentService {
     expect(chargeMethod).toBeDefined();
   });
 
+  it('extracts plain TypeScript class fields as fields and arrow class fields as methods', () => {
+    const code = `
+class ToolHandler {
+  private projectCache: Map<string, unknown> = new Map();
+  private defaultProjectHint: string | null = null;
+  handler = (value: string) => value.toUpperCase();
+}
+`;
+    const result = extractFromSource('handler.ts', code);
+
+    const fields = result.nodes.filter((n) => n.kind === 'field').map((n) => n.name);
+    const methods = result.nodes.filter((n) => n.kind === 'method').map((n) => n.name);
+
+    expect(fields).toContain('projectCache');
+    expect(fields).toContain('defaultProjectHint');
+    expect(methods).toContain('handler');
+    expect(methods).not.toContain('projectCache');
+    expect(methods).not.toContain('defaultProjectHint');
+  });
+
   it('should extract interfaces', () => {
     const code = `
 export interface User {

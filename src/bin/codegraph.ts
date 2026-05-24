@@ -20,6 +20,7 @@
  *   codegraph callees <symbol>   Find what a function/method calls
  *   codegraph impact <symbol>    Analyze what code is affected by changing a symbol
  *   codegraph affected [files]   Find test files affected by changes
+ *   codegraph import-candidates <specifier>  Find workspace import candidates for a package
  */
 
 import { Command } from 'commander';
@@ -1284,15 +1285,15 @@ program
 }
 `));
         console.error('Available tools:');
-        console.error(chalk.cyan('  codegraph_search') + '    - Search for code symbols');
-        console.error(chalk.cyan('  codegraph_context') + '   - Build context for a task');
-        console.error(chalk.cyan('  codegraph_callers') + '   - Find callers of a symbol');
-        console.error(chalk.cyan('  codegraph_callees') + '   - Find what a symbol calls');
-        console.error(chalk.cyan('  codegraph_impact') + '    - Analyze impact of changes');
-        console.error(chalk.cyan('  codegraph_node') + '      - Get symbol details');
-        console.error(chalk.cyan('  codegraph_trace') + '     - Trace entry-to-target graph paths');
-        console.error(chalk.cyan('  codegraph_files') + '     - Get project file structure');
-        console.error(chalk.cyan('  codegraph_status') + '    - Get index status');
+        console.error(chalk.cyan('  search') + '    - Search for code symbols');
+        console.error(chalk.cyan('  context') + '   - Build context for a task');
+        console.error(chalk.cyan('  callers') + '   - Find callers of a symbol');
+        console.error(chalk.cyan('  callees') + '   - Find what a symbol calls');
+        console.error(chalk.cyan('  impact') + '    - Analyze impact of changes');
+        console.error(chalk.cyan('  node') + '      - Get symbol details');
+        console.error(chalk.cyan('  trace') + '     - Trace entry-to-target graph paths');
+        console.error(chalk.cyan('  files') + '     - Get project file structure');
+        console.error(chalk.cyan('  status') + '    - Get index status');
       }
     } catch (err) {
       error(`Failed to start server: ${err instanceof Error ? err.message : String(err)}`);
@@ -1722,6 +1723,109 @@ program
       cg.destroy();
     } catch (err) {
       error(`Affected analysis failed: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+  });
+
+/**
+ * codegraph import-candidates <specifier>
+ */
+program
+  .command('import-candidates <specifier>')
+  .description('Find workspace import candidates for a package specifier')
+  .option('-p, --path <path>', 'Project path')
+  .option('-j, --json', 'Output as JSON')
+  .option('-q, --quiet', 'Output only resolved file paths (one per line)')
+  .action(async (specifier: string, options: { path?: string; json?: boolean; quiet?: boolean }) => {
+    const projectPath = resolveProjectPath(options.path);
+
+    try {
+      if (!isInitialized(projectPath)) {
+        error(`CodeGraph not initialized in ${projectPath}`);
+        process.exit(1);
+      }
+
+      const { default: CodeGraph } = await loadCodeGraph();
+      const cg = await CodeGraph.open(projectPath);
+
+      const result = cg.getWorkspaceImportCandidates(specifier);
+
+      if (options.json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else if (options.quiet) {
+        for (const c of result.candidates) {
+          if (c.exists) {
+            console.log(c.sourcePath);
+          }
+        }
+      } else {
+        if (result.candidates.length === 0) {
+          info(`No workspace import candidates found for "${specifier}"`);
+          if (result.caveats.length > 0) {
+            console.log(chalk.dim('  Notes:'));
+            for (const note of result.caveats) {
+              console.log(chalk.dim(`    • ${note}`));
+            }
+          }
+        } else {
+          console.log(chalk.bold(`\nWorkspace Import Candidates for "${specifier}":\n`));
+          if (result.package) {
+            console.log(`  Package:   ${chalk.cyan(result.package.name)} ${chalk.dim(`→ ${result.package.packageDir}`)}`);
+          }
+          console.log(`  Status:    ${result.status}`);
+          console.log(`  Total:     ${formatNumber(result.totalCandidates)} candidate(s)`);
+          if (result.omittedCandidates > 0) {
+            console.log(`  Omitted:   ${formatNumber(result.omittedCandidates)} low-confidence`);
+          }
+          console.log();
+
+          for (const c of result.candidates) {
+            const confidenceColor = c.confidence >= 0.9 ? colors.green : c.confidence >= 0.5 ? colors.yellow : colors.red;
+            const status = c.exists
+              ? c.indexed
+                ? chalk.green('✓ indexed')
+                : chalk.yellow('exists (not indexed)')
+              : chalk.red('not found');
+            const subpathLabel = c.subpath ? chalk.dim(`/${c.subpath}`) : '';
+            console.log(`  ${chalk.white(c.packageName)}${subpathLabel}`);
+            console.log(`    Source:  ${c.sourcePath}`);
+            if (c.symbol) {
+              console.log(`    Symbol:  ${c.symbol}`);
+            }
+            console.log(`    Confidence: ${confidenceColor}${(c.confidence * 100).toFixed(0)}%${colors.reset}  ${status}`);
+            if (c.conditionPath && c.conditionPath.length > 0) {
+              console.log(`    Path:    ${c.conditionPath.join(' → ')}`);
+            }
+            if (c.reExportChain && c.reExportChain.length > 0) {
+              console.log(`    Re-exports:`);
+              for (const step of c.reExportChain) {
+                const nameInfo = step.exportedName
+                  ? step.exportedName !== step.originalName
+                    ? ` (${step.originalName} → ${step.exportedName})`
+                    : ` (${step.exportedName})`
+                  : '';
+                console.log(`      ${step.from} → ${step.to}${nameInfo}`);
+              }
+            }
+            if (c.note) {
+              console.log(chalk.dim(`    Note:    ${c.note}`));
+            }
+            console.log();
+          }
+
+          if (result.recommendations.length > 0) {
+            console.log(chalk.bold('  Recommendations:'));
+            for (const r of result.recommendations) {
+              console.log(`    • ${r}`);
+            }
+            console.log();
+          }
+        }
+      }
+
+      cg.destroy();
+    } catch (err) {
+      error(`import-candidates failed: ${err instanceof Error ? err.message : String(err)}`);
       process.exit(1);
     }
   });

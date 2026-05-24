@@ -19,7 +19,7 @@ import * as path from 'path';
 import CodeGraph, { findNearestCodeGraphRoot } from '../index';
 import { watchDisabledReason } from '../sync';
 import { StdioTransport, JsonRpcRequest, JsonRpcNotification, ErrorCodes } from './transport';
-import { tools, ToolHandler } from './tools';
+import { findToolDefinition, ToolHandler } from './tools';
 import { SERVER_INSTRUCTIONS } from './server-instructions';
 import { HOST_PPID_ENV } from '../extraction/wasm-runtime-flags';
 
@@ -534,8 +534,9 @@ export class MCPServer {
     const toolName = params.name;
     const toolArgs = params.arguments || {};
 
-    // Validate tool exists
-    const tool = tools.find(t => t.name === toolName);
+    // Validate tool exists. Advertised MCP tool names are raw (e.g. "search"),
+    // but prefixed aliases ("codegraph_search") remain accepted for compatibility.
+    const tool = findToolDefinition(toolName);
     if (!tool) {
       this.transport.sendError(
         request.id,

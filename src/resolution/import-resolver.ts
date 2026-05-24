@@ -35,6 +35,10 @@ export function resolveImportPath(
   language: Language,
   context: ResolutionContext
 ): string | null {
+  // Try workspace package resolution first (before external check)
+  const workspaceResult = resolveWorkspaceImport(importPath, context);
+  if (workspaceResult) return workspaceResult;
+
   // Skip external/npm packages — but pass the context so the
   // bare-specifier heuristic can consult the project's tsconfig
   // alias map first (custom prefixes like `@components/*` would
@@ -56,12 +60,31 @@ export function resolveImportPath(
 }
 
 /**
+ * Try to resolve a workspace package import to a unique high-confidence
+ * indexed source candidate. Returns null when ambiguous, unindexed, or
+ * not a workspace package.
+ */
+function resolveWorkspaceImport(importPath: string, context: ResolutionContext): string | null {
+  if (importPath.startsWith('.')) return null;
+  if (!context.getWorkspaceImportCandidates) return null;
+
+  const candidates = context.getWorkspaceImportCandidates(importPath, { highConfidenceOnly: true });
+  // Defensive re-check: the context provider already filters, but we validate
+  // again here so this function stays self-documenting and safe even if the
+  // provider implementation changes.
+  if (candidates.length === 1 && candidates[0]!.confidence >= 0.8 && candidates[0]!.indexed) {
+    return candidates[0]!.sourcePath;
+  }
+  return null;
+}
+
+/**
  * Check if an import is external (npm package, etc.)
  *
  * `context` is consulted for project-defined path aliases
- * (tsconfig/jsconfig `paths`). Without that check, custom prefixes
- * like `@components/*` would fail the bare-specifier heuristic and
- * be classified as external before alias resolution can run.
+ * (tsconfig/jsconfig `paths`) and workspace packages. Without those
+ * checks, custom prefixes or local workspace packages would fail the
+ * bare-specifier heuristic and be classified as external.
  */
 function isExternalImport(
   importPath: string,
@@ -84,6 +107,14 @@ function isExternalImport(
     if (aliases) {
       for (const pat of aliases.patterns) {
         if (importPath.startsWith(pat.prefix)) return false;
+      }
+    }
+    // Workspace package check: if there's a unique high-confidence
+    // indexed candidate, don't treat it as external.
+    if (context?.getWorkspaceImportCandidates) {
+      const candidates = context.getWorkspaceImportCandidates(importPath, { highConfidenceOnly: true });
+      if (candidates.length === 1 && candidates[0]!.confidence >= 0.8 && candidates[0]!.indexed) {
+        return false;
       }
     }
     // Scoped packages or bare specifiers that don't start with aliases

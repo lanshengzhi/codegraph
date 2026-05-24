@@ -642,7 +642,7 @@ ${Array.from({ length: 45 }, (_, index) => `  step(${index});`).join('\n')}
   });
 
   it('exposes schema, formats structure, and does not include a source code block', async () => {
-    const tool = tools.find((item) => item.name === 'codegraph_node');
+    const tool = tools.find((item) => item.name === 'node');
     expect(tool?.inputSchema.properties.detail).toMatchObject({ type: 'string', enum: ['structure'] });
 
     const node = findNode(cg, 'run', 'function');
@@ -709,5 +709,12 @@ ${Array.from({ length: 45 }, (_, index) => `  step(${index});`).join('\n')}
     const cls = findNode(cg, 'Runner', 'class');
     const outline = await handler.execute('codegraph_node', { nodeId: cls.id, includeCode: true });
     expect(outline.content[0].text).toContain('Structural outline only');
+
+    const structureOutline = await handler.execute('codegraph_node', { nodeId: cls.id, detail: 'structure' });
+    expect(structureOutline.isError).toBeFalsy();
+    expect(structureOutline.content[0].text).toContain('## Runner (class)');
+    expect(structureOutline.content[0].text).toContain('Members (');
+    expect(structureOutline.content[0].text).toContain('Structural outline only');
+    expect(structureOutline.content[0].text).not.toContain('unsupported-node-kind');
   });
 });

@@ -330,7 +330,20 @@ export class FieldSitesAnalyzer {
     }
 
     if (status === 'partial') {
-      result.caveats.push('Search results are incomplete due to skipped files or result limits.');
+      const parts: string[] = [];
+      if (omittedSites > 0) {
+        parts.push(`${omittedSites} site(s) omitted (limit ${limit})`);
+      }
+      const skippedReasons = new Set(skippedFiles.map(s => s.reason));
+      if (skippedReasons.size > 0) {
+        parts.push(`${skippedFiles.length} file(s) skipped (${[...skippedReasons].join(', ')})`);
+      }
+      if (hasPartial) {
+        parts.push('some matched files had partial AST coverage');
+      }
+      if (parts.length > 0) {
+        result.caveats.push(`Incomplete: ${parts.join('; ')}.`);
+      }
     }
 
     // Generate recommendations from top enclosing nodes (available or partial)

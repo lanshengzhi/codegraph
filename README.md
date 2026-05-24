@@ -239,15 +239,17 @@ npm install -g @colbymchenry/codegraph
 {
   "permissions": {
     "allow": [
-      "mcp__codegraph__codegraph_search",
-      "mcp__codegraph__codegraph_context",
-      "mcp__codegraph__codegraph_callers",
-      "mcp__codegraph__codegraph_callees",
-      "mcp__codegraph__codegraph_impact",
-      "mcp__codegraph__codegraph_node",
-      "mcp__codegraph__codegraph_trace",
-      "mcp__codegraph__codegraph_status",
-      "mcp__codegraph__codegraph_files"
+      "mcp__codegraph__search",
+      "mcp__codegraph__context",
+      "mcp__codegraph__callers",
+      "mcp__codegraph__callees",
+      "mcp__codegraph__impact",
+      "mcp__codegraph__node",
+      "mcp__codegraph__trace",
+      "mcp__codegraph__status",
+      "mcp__codegraph__files",
+      "mcp__codegraph__field_sites",
+      "mcp__codegraph__import_candidates"
     ]
   }
 }
@@ -267,7 +269,7 @@ CodeGraph builds a semantic knowledge graph of codebases for faster, smarter cod
 
 ### If `.codegraph/` exists in the project
 
-Use CodeGraph directly for structural exploration: `codegraph_context` for orientation, `codegraph_trace` for lifecycle / entry-to-target paths, then one `codegraph_explore` for the source behind returned handles. Results include exact `nodeId` and `file:line` ranges; pass those handles back to follow-up tools instead of fuzzy re-searching.
+Use CodeGraph directly for structural exploration: `codegraph_context` for orientation, `codegraph_trace` for lifecycle / entry-to-target paths, then one `codegraph_explore` for the source behind returned handles. Pi and other global tool gateways expose the raw MCP tools with the server prefix (`codegraph_search`); raw MCP clients may show suffix names (`search`, `status`, ...). Results include exact `nodeId` and `file:line` ranges; pass those handles back to follow-up tools instead of fuzzy re-searching.
 
 **Useful tools:**
 
@@ -280,6 +282,9 @@ Use CodeGraph directly for structural exploration: `codegraph_context` for orien
 | `codegraph_impact` | Check what's affected before editing |
 | `codegraph_node` | Get a single symbol/locator's details; use `detail: "structure"` for long TS/JS function/method structure summaries before reading full source |
 | `codegraph_explore` | Inspect several related symbols' source in one capped call |
+| `codegraph_files` / `codegraph_status` | Inspect indexed files and index health |
+| `codegraph_field_sites` | Find static read/write/construction/mapping hints for a field/key |
+| `codegraph_import_candidates` | Inspect static workspace package import candidates |
 
 ### If `.codegraph/` does NOT exist
 
@@ -407,8 +412,11 @@ When running as an MCP server, CodeGraph exposes these tools to Claude Code:
 | `codegraph_files` | Get indexed file structure (faster than filesystem scanning) |
 | `codegraph_status` | Check index health and statistics. Pass `detail: "coverage"` for indexed-source boundary explanations (pending changes, extraction errors, unresolved refs, workspace/alias summaries). Pass `checkFilesystem: true` to compare the index against on-disk source files. |
 | `codegraph_field_sites` | Find read, write, object-construction, and mapping-hint sites for a field/key name in TS/JS files (static AST hints, not full dataflow) |
+| `codegraph_import_candidates` | List workspace package import candidates for a specifier (e.g. `@scope/pkg` or `@scope/pkg/subpath`). Returns source entry candidates with evidence, confidence, and indexed status; pass `symbol` to chase through barrel re-export chains. Static candidates only — not a complete Node/TypeScript resolver. |
 
 Search and node results include copyable handles such as `nodeId=...`, `qualifiedName=...`, and `range=src/file.ts:10-20`. Pass those back to `codegraph_node`, `codegraph_callers`, `codegraph_callees`, `codegraph_impact`, or `codegraph_trace` as `nodeId`, `qualifiedName`, `path`+`line`, or `fileLine`. For long TS/JS functions, `codegraph_node({ nodeId, detail: "structure" })` returns static AST navigation sections (control flow, key callsites, construction/returns) with exact ranges and caveats; it is not runtime proof or an LLM summary. Trace output may highlight max-depth frontiers, indexed dead ends, metadata-not-recorded edges, or low-evidence/static framework boundaries with exact follow-up handles; these are static graph caveats, not runtime proof.
+
+CodeGraph reports indexed source structure, not git state. For current working-tree changes, use `git status` / `git diff` first, then use CodeGraph tools on the changed symbols to understand callers, callees, traces, and impact.
 
 Example trace input:
 

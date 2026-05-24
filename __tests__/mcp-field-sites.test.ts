@@ -50,19 +50,20 @@ async function initProject(root: string, options?: { include?: string[] }): Prom
 // Schema tests — no project needed
 // ---------------------------------------------------------------------------
 describe('codegraph_field_sites schema', () => {
-  it('is registered in the tools array', () => {
-    const tool = tools.find((t) => t.name === 'codegraph_field_sites');
+  it('is registered in the tools array with the raw MCP name', () => {
+    const tool = tools.find((t) => t.name === 'field_sites');
     expect(tool).toBeDefined();
-    expect(tool!.name).toBe('codegraph_field_sites');
+    expect(tool!.name).toBe('field_sites');
+    expect(tools.some((t) => t.name === 'codegraph_field_sites')).toBe(false);
   });
 
   it('has required field parameter', () => {
-    const tool = tools.find((t) => t.name === 'codegraph_field_sites')!;
+    const tool = tools.find((t) => t.name === 'field_sites')!;
     expect(tool.inputSchema.required).toContain('field');
   });
 
   it('has optional scopePath, limit, includeTests, projectPath', () => {
-    const tool = tools.find((t) => t.name === 'codegraph_field_sites')!;
+    const tool = tools.find((t) => t.name === 'field_sites')!;
     const props = tool.inputSchema.properties;
     expect(props.scopePath).toBeDefined();
     expect(props.limit).toBeDefined();
@@ -71,7 +72,7 @@ describe('codegraph_field_sites schema', () => {
   });
 
   it('does NOT expose maxSourceBytes in MCP schema', () => {
-    const tool = tools.find((t) => t.name === 'codegraph_field_sites')!;
+    const tool = tools.find((t) => t.name === 'field_sites')!;
     const props = tool.inputSchema.properties;
     expect(props.maxSourceBytes).toBeUndefined();
   });

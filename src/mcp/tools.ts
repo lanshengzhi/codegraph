@@ -5,7 +5,7 @@
  */
 
 import CodeGraph, { findNearestCodeGraphRoot } from '../index';
-import { REFERENCE_SOURCE_EVIDENCE_VALUES } from '../types';
+import { NODE_KINDS, REFERENCE_SOURCE_EVIDENCE_VALUES } from '../types';
 import type {
   Node,
   Edge,
@@ -28,6 +28,7 @@ import type {
   SourceRange,
   FieldSite,
   FieldSitesResult,
+  WorkspaceImportCandidatesResult,
 } from '../types';
 import { formatNodeHandle, matchesSymbol as nodeMatchesSymbol } from '../addressability/format';
 import { createHash } from 'crypto';
@@ -48,6 +49,7 @@ import { formatRelevanceReason } from '../context/formatter';
 /** Maximum output length to prevent context bloat (characters) */
 const MAX_OUTPUT_LENGTH = 15000;
 const REFERENCE_SOURCE_EVIDENCE_SET: ReadonlySet<string> = new Set(REFERENCE_SOURCE_EVIDENCE_VALUES);
+const NODE_KIND_SET: ReadonlySet<string> = new Set(NODE_KINDS);
 const NAME_MATCH_RESOLVERS = new Set(['exact-match', 'qualified-name', 'instance-method', 'import', 'file-path']);
 const EDGE_TEXT_FIELD_CAP = 120;
 
@@ -320,17 +322,21 @@ const projectPathProperty: PropertySchema = {
 };
 
 const locatorProperties: Record<string, PropertySchema> = {
-  symbol: {
+  fileLine: {
     type: 'string',
-    description: 'Backward-compatible symbol/name lookup. Prefer nodeId or fileLine when available.',
-  },
-  nodeId: {
-    type: 'string',
-    description: 'Exact opaque node ID from a previous CodeGraph result handle.',
+    description: 'Easiest for human lookup — source location like "src/a.ts:123" or "src/a.ts:123:9".',
   },
   qualifiedName: {
     type: 'string',
-    description: 'Exact qualifiedName from a previous CodeGraph result handle.',
+    description: 'Exact qualifiedName from a previous CodeGraph handle (e.g. "ExtractionOrchestrator").',
+  },
+  symbol: {
+    type: 'string',
+    description: 'Backward-compatible name/partial-name lookup. Prefer fileLine or qualifiedName when known.',
+  },
+  nodeId: {
+    type: 'string',
+    description: 'Opaque hash like "class:cc2d01eb..." from a previous result. Do NOT guess — copy from search/trace output.',
   },
   path: {
     type: 'string',
@@ -339,10 +345,6 @@ const locatorProperties: Record<string, PropertySchema> = {
   line: {
     type: 'number',
     description: '1-indexed source line for path+line lookup.',
-  },
-  fileLine: {
-    type: 'string',
-    description: 'Convenience source location such as "src/a.ts:123" or "src/a.ts:123:9".',
   },
 };
 
@@ -369,14 +371,35 @@ const EDGE_KIND_VALUES: EdgeKind[] = [
 /**
  * All CodeGraph MCP tools
  *
- * Designed for minimal context usage - use codegraph_context as the primary tool,
+ * Designed for minimal context usage - use context as the primary tool,
  * and only use other tools for targeted follow-up queries.
  *
  * All tools support cross-project queries via the optional `projectPath` parameter.
  */
+const TOOL_NAME_PREFIX = 'codegraph_';
+
+/**
+ * MCP tools are advertised with raw names (search, status, ...). Pi and
+ * other global tool gateways prefix them with the MCP server name, yielding
+ * codegraph_search/codegraph_status. Accept prefixed and double-prefixed
+ * names internally for compatibility with older installs and tests.
+ */
+export function normalizeToolName(toolName: string): string {
+  let normalized = toolName;
+  while (normalized.startsWith(TOOL_NAME_PREFIX)) {
+    normalized = normalized.slice(TOOL_NAME_PREFIX.length);
+  }
+  return normalized;
+}
+
+export function findToolDefinition(toolName: string): ToolDefinition | undefined {
+  const normalized = normalizeToolName(toolName);
+  return tools.find(tool => normalizeToolName(tool.name) === normalized);
+}
+
 export const tools: ToolDefinition[] = [
   {
-    name: 'codegraph_search',
+    name: 'search',
     description: 'Quick symbol search by name. Returns locations only (no code). Use codegraph_context instead for comprehensive task context.',
     inputSchema: {
       type: 'object',
@@ -388,7 +411,7 @@ export const tools: ToolDefinition[] = [
         kind: {
           type: 'string',
           description: 'Filter by node kind',
-          enum: ['function', 'method', 'class', 'interface', 'type', 'variable', 'route', 'component'],
+          enum: [...NODE_KINDS],
         },
         limit: {
           type: 'number',
@@ -401,8 +424,8 @@ export const tools: ToolDefinition[] = [
     },
   },
   {
-    name: 'codegraph_context',
-    description: 'PRIMARY TOOL — call this FIRST for any "how does X work", architecture, feature, or bug-context question. Composes search + node + callers + callees and returns entry points, related symbols, and key code in ONE call — usually enough to answer with no further search/Read/Grep. Prefer this over chaining codegraph_search + codegraph_node, and over codegraph_explore. NOTE: provides CODE context, not product requirements; for new features still clarify UX/edge cases with the user.',
+    name: 'context',
+    description: 'PRIMARY TOOL — call this FIRST for any "how does X work", architecture, feature, or bug-context question. Composes search + node + callers + callees and returns entry points, related symbols, and key code in ONE call — usually enough to answer with no further search/Read/Grep. Prefer this over chaining codegraph_search + codegraph_node, and over codegraph_explore. NOTE: provides CODE context, not product requirements or git diffs; use git status/diff for current working-tree changes.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -426,7 +449,7 @@ export const tools: ToolDefinition[] = [
     },
   },
   {
-    name: 'codegraph_callers',
+    name: 'callers',
     description: 'Find all functions/methods that call a specific symbol or exact locator. Accepts symbol, nodeId, qualifiedName, path+line, or fileLine.',
     inputSchema: {
       type: 'object',
@@ -442,7 +465,7 @@ export const tools: ToolDefinition[] = [
     },
   },
   {
-    name: 'codegraph_callees',
+    name: 'callees',
     description: 'Find all functions/methods that a specific symbol or exact locator calls. Accepts symbol, nodeId, qualifiedName, path+line, or fileLine.',
     inputSchema: {
       type: 'object',
@@ -458,7 +481,7 @@ export const tools: ToolDefinition[] = [
     },
   },
   {
-    name: 'codegraph_impact',
+    name: 'impact',
     description: 'Analyze the impact radius of changing a symbol or exact locator. Accepts symbol, nodeId, qualifiedName, path+line, or fileLine.',
     inputSchema: {
       type: 'object',
@@ -474,8 +497,8 @@ export const tools: ToolDefinition[] = [
     },
   },
   {
-    name: 'codegraph_node',
-    description: 'Get detailed info about ONE symbol or exact locator (location, range, handle, signature, docstring). Accepts symbol, nodeId, qualifiedName, path+line, or fileLine. For long TS/JS functions/methods, pass detail="structure" for a static AST structure summary without full source. Pass includeCode=true for source: a function/method returns its body; a class/interface/struct/enum returns a compact member OUTLINE.',
+    name: 'node',
+    description: 'Get detailed info about ONE symbol or exact locator (location, range, handle, signature, docstring). Accepts symbol, nodeId, qualifiedName, path+line, or fileLine. For long TS/JS functions/methods, pass detail="structure" for a static AST structure summary without full source; for classes/interfaces/structs/enums it returns a compact member outline. Pass includeCode=true for source: a function/method returns its body; a class/interface/struct/enum returns a compact member OUTLINE.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -487,7 +510,7 @@ export const tools: ToolDefinition[] = [
         },
         detail: {
           type: 'string',
-          description: 'Optional detail mode. Use "structure" for a static AST-derived structure summary of long TS/JS function/method bodies without full source.',
+          description: 'Optional detail mode. Use "structure" for a static AST-derived structure summary of long TS/JS function/method bodies, or a container member outline, without full source.',
           enum: ['structure'],
         },
         projectPath: projectPathProperty,
@@ -495,7 +518,7 @@ export const tools: ToolDefinition[] = [
     },
   },
   {
-    name: 'codegraph_explore',
+    name: 'explore',
     description: 'Returns source for SEVERAL related symbols grouped by file, plus a relationship map, in ONE capped call. This is the efficient way to inspect many related symbols at once — strongly prefer it over a series of codegraph_node or Read calls (each separate call re-reads the whole context, so 8 node calls cost far more than 1 explore). Use it after codegraph_context when you need to see the actual source of several symbols. Query with specific symbol/file/code terms, NOT natural-language sentences — run codegraph_search first to find names. Bad: "how are agent prompts loaded and passed to the CLI". Good: "renderStaticScene drawElementOnCanvas ShapeCache renderElement.ts".',
     inputSchema: {
       type: 'object',
@@ -515,7 +538,7 @@ export const tools: ToolDefinition[] = [
     },
   },
   {
-    name: 'codegraph_trace',
+    name: 'trace',
     description: 'Trace likely static graph paths from an entry locator to a target symbol/query/locator. Returns ranked path steps with nodeId/range handles, static score/reason, edge kinds, callsite lines when available, gaps, and recommended next inspections. This is guidance over the indexed graph, not runtime proof.',
     inputSchema: {
       type: 'object',
@@ -561,7 +584,7 @@ export const tools: ToolDefinition[] = [
     },
   },
   {
-    name: 'codegraph_status',
+    name: 'status',
     description: 'Get the status of the CodeGraph index, including statistics about indexed files, nodes, and edges. Use detail: "coverage" for indexed-source boundary explanations, pending changes, extraction errors, unresolved refs, and workspace/alias summaries.',
     inputSchema: {
       type: 'object',
@@ -587,7 +610,7 @@ export const tools: ToolDefinition[] = [
     },
   },
   {
-    name: 'codegraph_files',
+    name: 'files',
     description: 'REQUIRED for file/folder exploration. Get the project file structure from the CodeGraph index. Returns a tree view of all indexed files with metadata (language, symbol count). Much faster than Glob/filesystem scanning. Use this FIRST when exploring project structure, finding files, or understanding codebase organization.',
     inputSchema: {
       type: 'object',
@@ -620,7 +643,7 @@ export const tools: ToolDefinition[] = [
     },
   },
   {
-    name: 'codegraph_field_sites',
+    name: 'field_sites',
     description: 'Find read, write, object-construction, destructuring, return-object, and mapping-hint sites for a field/key name (string literal). Returns static AST-level navigation hints grouped by category (writes → mapping hints → object construction → reads) with exact ranges, enclosing handles, and next-step recommendations. These are syntax-level clues — not full dataflow, alias analysis, or runtime payload proof.',
     inputSchema: {
       type: 'object',
@@ -646,6 +669,35 @@ export const tools: ToolDefinition[] = [
         projectPath: projectPathProperty,
       },
       required: ['field'],
+    },
+  },
+  {
+    name: 'import_candidates',
+    description: 'Monorepo workspace only — list workspace package import candidates for a specifier (e.g., "@scope/pkg" or "@scope/pkg/subpath"). Returns source entry candidates with evidence, confidence, indexed status, and optional symbol resolution through re-export chains. Not for npm-installed packages — use npm ls / grep / node_modules for those. Static candidates only — not a complete Node/TypeScript resolver or runtime proof.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        specifier: {
+          type: 'string',
+          description: 'Exact import specifier (e.g., "@scope/pkg" or "@scope/pkg/subpath")',
+        },
+        symbol: {
+          type: 'string',
+          description: 'Optional imported symbol to chase through entry/re-export candidates',
+        },
+        limit: {
+          type: 'number',
+          description: 'Maximum candidates to return (default: 20, clamp 1..100)',
+          default: 20,
+        },
+        includeUnindexed: {
+          type: 'boolean',
+          description: 'Show package entries that exist on disk but are not indexed (default: false)',
+          default: false,
+        },
+        projectPath: projectPathProperty,
+      },
+      required: ['specifier'],
     },
   },
 ];
@@ -700,7 +752,7 @@ export class ToolHandler {
       const budget = getExploreBudget(stats.fileCount);
 
       return tools.map(tool => {
-        if (tool.name === 'codegraph_explore') {
+        if (normalizeToolName(tool.name) === 'explore') {
           return {
             ...tool,
             description: `${tool.description} Budget: make at most ${budget} calls for this project (${stats.fileCount.toLocaleString()} files indexed).`,
@@ -873,29 +925,33 @@ export class ToolHandler {
         if (typeof check === 'object' && check !== undefined) return check;
       }
 
-      switch (toolName) {
-        case 'codegraph_search':
+      const normalizedToolName = normalizeToolName(toolName);
+
+      switch (normalizedToolName) {
+        case 'search':
           return await this.handleSearch(args);
-        case 'codegraph_context':
+        case 'context':
           return await this.handleContext(args);
-        case 'codegraph_callers':
+        case 'callers':
           return await this.handleCallers(args);
-        case 'codegraph_callees':
+        case 'callees':
           return await this.handleCallees(args);
-        case 'codegraph_impact':
+        case 'impact':
           return await this.handleImpact(args);
-        case 'codegraph_explore':
+        case 'explore':
           return await this.handleExplore(args);
-        case 'codegraph_trace':
+        case 'trace':
           return await this.handleTrace(args);
-        case 'codegraph_node':
+        case 'node':
           return await this.handleNode(args);
-        case 'codegraph_status':
+        case 'status':
           return await this.handleStatus(args);
-        case 'codegraph_files':
+        case 'files':
           return await this.handleFiles(args);
-        case 'codegraph_field_sites':
+        case 'field_sites':
           return await this.handleFieldSites(args);
+        case 'import_candidates':
+          return await this.handleImportCandidates(args);
         default:
           return this.errorResult(`Unknown tool: ${toolName}`);
       }
@@ -913,6 +969,9 @@ export class ToolHandler {
 
     const cg = this.getCodeGraph(args.projectPath as string | undefined);
     const kind = args.kind as string | undefined;
+    if (kind !== undefined && !NODE_KIND_SET.has(kind)) {
+      return this.errorResult(`Invalid kind: "${kind}". Use one of: ${NODE_KINDS.join(', ')}`);
+    }
     const rawLimit = Number(args.limit) || 10;
     const limit = clamp(rawLimit, 1, 100);
 
@@ -1542,7 +1601,7 @@ export class ToolHandler {
       lines.push(`> **Complete source code is included above for ${filesIncluded} files.** You do NOT need to re-read these files — the relevant sections are already shown in full. Only use Read/Grep for files listed under "Additional relevant files" if you need more detail.`);
     } else if (anyFileTrimmed) {
       lines.push('');
-      lines.push(`> Some file sections were trimmed for size. Use \`codegraph_node\` or Read for the full source if needed.`);
+      lines.push(`> Some file sections were trimmed for size. Use \`node\` or Read for the full source if needed.`);
     }
 
     // Add explore budget note based on project size
@@ -1568,7 +1627,7 @@ export class ToolHandler {
       const cut = output.slice(0, budget.maxOutputChars);
       const lastNewline = cut.lastIndexOf('\n');
       const safe = lastNewline > budget.maxOutputChars * 0.8 ? cut.slice(0, lastNewline) : cut;
-      return this.textResult(safe + '\n\n... (explore output truncated to budget — use codegraph_node or Read for more)');
+      return this.textResult(safe + '\n\n... (explore output truncated to budget — use node or Read for more)');
     }
     return this.textResult(output);
   }
@@ -1609,6 +1668,14 @@ export class ToolHandler {
       const resolution = cg.resolveNodeLocator(locator);
       if (resolution.status !== 'resolved' || !resolution.node) {
         return this.textResult(this.formatResolutionFailure(resolution));
+      }
+      if (CONTAINER_NODE_KINDS.has(resolution.node.kind)) {
+        const outline = this.buildContainerOutline(cg, resolution.node);
+        let formatted = this.formatNodeDetails(resolution.node, null, outline || '**Members (0):**');
+        if (includeCode) {
+          formatted += '\n\n> Note: includeCode ignored because detail=structure.';
+        }
+        return this.textResult(this.truncateOutput(formatted));
       }
       const result = await cg.getNodeStructure(resolution.node.id);
       const formatted = this.formatNodeStructure(result, { includeCodeIgnored: includeCode });
@@ -2076,6 +2143,133 @@ export class ToolHandler {
     return lines;
   }
 
+  /**
+   * Handle codegraph_import_candidates — workspace package import candidates
+   */
+  private async handleImportCandidates(args: Record<string, unknown>): Promise<ToolResult> {
+    const specifier = this.validateString(args.specifier, 'specifier', 500);
+    if (typeof specifier !== 'string') return specifier;
+
+    const symbol = args.symbol !== undefined ? this.validateString(args.symbol, 'symbol', 500) : undefined;
+    if (typeof symbol === 'object' && symbol !== undefined) return symbol;
+
+    const limit = args.limit != null ? clamp(args.limit as number, 1, 100) : 20;
+    const includeUnindexed = args.includeUnindexed === true;
+
+    const cg = this.getCodeGraph(args.projectPath as string | undefined);
+    const result = cg.getWorkspaceImportCandidates(specifier, { symbol, limit, includeUnindexed });
+    const formatted = this.formatImportCandidates(result);
+    return this.textResult(this.truncateOutput(formatted));
+  }
+
+  /**
+   * Format a WorkspaceImportCandidatesResult into markdown for MCP output
+   */
+  private formatImportCandidates(result: WorkspaceImportCandidatesResult): string {
+    const lines: string[] = [];
+
+    lines.push(`## Workspace import candidates: \`${result.specifier}\``);
+    lines.push('');
+    lines.push(
+      '> Static workspace package candidates only. This is not a complete Node/TypeScript resolver and not runtime proof.'
+    );
+    lines.push('');
+
+    if (result.status !== 'available') {
+      lines.push(`Status: ${result.status}`);
+      if (result.caveats.length > 0) {
+        for (const c of result.caveats) {
+          lines.push(`- ${c}`);
+        }
+      }
+      lines.push('');
+    }
+
+    if (result.package) {
+      lines.push(`Package: ${result.package.packageJsonPath} (\`${result.package.name}\`)`);
+      if (result.symbol) {
+        lines.push(`Symbol: ${result.symbol}`);
+      }
+      lines.push('');
+    }
+
+    if (result.candidates.length === 0) {
+      if (result.status === 'available') {
+        lines.push('No candidates found.');
+      }
+    } else {
+      lines.push('### Candidates');
+      lines.push('');
+      for (let i = 0; i < result.candidates.length; i++) {
+        const c = result.candidates[i]!;
+        const meta = [
+          `evidence=${c.evidence}`,
+          `confidence=${c.confidence.toFixed(2)}`,
+          c.indexed ? 'indexed=yes' : 'indexed=no',
+          c.exists ? 'exists=yes' : 'exists=no',
+          c.language ? `language=${c.language}` : '',
+          c.nodeCount != null ? `symbols=${c.nodeCount}` : '',
+        ]
+          .filter(Boolean)
+          .join(' ');
+
+        lines.push(`${i + 1}. ${c.sourcePath}`);
+        lines.push(`   ${meta}`);
+
+        if (c.exportField) {
+          lines.push(`   export field: ${c.exportField}`);
+        }
+        if (c.conditionPath) {
+          lines.push(`   condition path: ${c.conditionPath.join(' / ')}`);
+        }
+        if (c.symbolNode) {
+          const n = c.symbolNode;
+          lines.push(
+            `   symbol \`${c.symbol}\`: nodeId=${n.nodeId} range=${n.path}:${n.startLine}-${n.endLine}`
+          );
+        }
+        if (c.symbolAlternatives && c.symbolAlternatives.length > 0) {
+          lines.push(`   symbol \`${c.symbol}\` ambiguous alternatives:`);
+          for (const alt of c.symbolAlternatives.slice(0, 5)) {
+            lines.push(`     - ${alt.name} (${alt.kind}) nodeId=${alt.nodeId} range=${alt.path}:${alt.startLine}-${alt.endLine}`);
+          }
+          if (c.symbolAlternatives.length > 5) {
+            lines.push(`     - ... and ${c.symbolAlternatives.length - 5} more`);
+          }
+        }
+        if (c.reExportChain && c.reExportChain.length > 0) {
+          const chainStr = c.reExportChain
+            .map((step) => `${step.from} -> ${step.to}${step.exportedName ? ` (${step.exportedName})` : ''}`)
+            .join(' -> ');
+          lines.push(`   re-export chain: ${chainStr}`);
+        }
+        if (c.note) {
+          lines.push(`   note: ${c.note}`);
+        }
+      }
+    }
+
+    if (result.omittedCandidates > 0) {
+      lines.push(`\n... ${result.omittedCandidates} more candidate(s) omitted.`);
+    }
+
+    if (result.caveats.length > 0) {
+      lines.push('', '### Caveats');
+      for (const c of result.caveats) {
+        lines.push(`- ${c}`);
+      }
+    }
+
+    if (result.recommendations.length > 0) {
+      lines.push('', '### Recommended next');
+      for (const r of result.recommendations) {
+        lines.push(`- ${r}`);
+      }
+    }
+
+    return lines.join('\n');
+  }
+
   private formatFilesNoMatch(pathFilter?: string, pattern?: string): string {
     const lines: string[] = [
       'No indexed files matched the criteria.',
@@ -2090,7 +2284,7 @@ export class ToolHandler {
     }
 
     lines.push(
-      'Note: codegraph_files lists indexed files only, not the complete filesystem. A file may be new, ignored, unsupported, non-code, or not synced yet.',
+      'Note: files lists indexed files only, not the complete filesystem. A file may be new, ignored, unsupported, non-code, or not synced yet.',
       'Use index-relative paths like `src/foo.ts`, not `./src/foo.ts` or absolute paths.',
       'Suggested checks:',
       '- git status'
@@ -2817,7 +3011,7 @@ export class ToolHandler {
     if (!cleaned) return null;
     if (/^Resolve ambiguity with an exact handle:?$/i.test(cleaned)) return null;
     if (/^Nearby alternatives:?$/i.test(cleaned)) return null;
-    if (/^Use codegraph_node with a returned nodeId/i.test(cleaned)) return null;
+    if (/^Use (?:codegraph_)?node with a returned nodeId/i.test(cleaned)) return null;
     if (/^nodeId=/.test(cleaned)) return null;
     if (/^Inspect the entry: nodeId=/.test(cleaned)) return null;
     return cleaned;
@@ -3090,10 +3284,16 @@ export class ToolHandler {
       .sort((a, b) => (a.startLine ?? 0) - (b.startLine ?? 0));
     if (children.length === 0) return '';
 
+    const maxMembers = 40;
+    const shown = children.slice(0, maxMembers);
     const lines = [`**Members (${children.length}):**`, ''];
-    for (const c of children) {
+    for (const c of shown) {
       const sig = c.signature ? ` — \`${c.signature}\`` : '';
       lines.push(`- ${c.name} (${c.kind}) ${formatNodeHandle(c)}${sig}`);
+    }
+    const omitted = children.length - shown.length;
+    if (omitted > 0) {
+      lines.push(`- ... ${omitted} more members omitted; call codegraph_node on a specific member or read ${node.filePath}`);
     }
     return lines.join('\n');
   }

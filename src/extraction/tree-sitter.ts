@@ -694,6 +694,20 @@ export class TreeSitterExtractor {
       return;
     }
 
+    // TypeScript/JavaScript class fields share one AST node type for both
+    // callback-style methods (`handler = (e) => { ... }`) and plain data
+    // fields (`projectCache = new Map()`). Only the former should be indexed
+    // as methods. Without this guard, every class field looked callable in
+    // codegraph_node outlines and call-graph queries.
+    if ((node.type === 'public_field_definition' || node.type === 'field_definition') && this.isInsideClassLikeNode()) {
+      const body = this.extractor.resolveBody?.(node, this.extractor.bodyField)
+        ?? getChildByField(node, this.extractor.bodyField);
+      if (!body) {
+        this.extractField(node);
+        return;
+      }
+    }
+
     const name = extractName(node, this.source, this.extractor);
 
     // Check for misparse artifacts (e.g. C++ "switch" inside macro-confused class body)

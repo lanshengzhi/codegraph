@@ -9,7 +9,7 @@
  * Goals when editing this:
  *   - Tool selection by intent (which tool for which question)
  *   - Common chains (refactor planning = X then Y)
- *   - Anti-patterns (don't grep when codegraph_search is faster)
+ *   - Anti-patterns (don't grep when search is faster)
  *
  * Keep it tight. The agent reads this every session — long instructions
  * burn tokens. Reference only tools that exist on `main`; gate any
@@ -21,8 +21,11 @@ Codegraph is a SQLite knowledge graph of every symbol, edge, and file
 in the workspace. Reads are sub-millisecond; the index lags writes by
 about a second through the file watcher. Consult it BEFORE writing or
 editing code, not during. Results include exact handles (nodeId,
-qualifiedName, range/path:line) you can pass to node/callers/callees/
-impact/trace follow-ups.
+qualifiedName, range/path:line) you can pass to codegraph_node/codegraph_callers/codegraph_callees/
+codegraph_impact/codegraph_trace follow-ups. Raw MCP advertises suffix names like
+\`search\` and \`status\`; Pi and other global tool gateways expose them with the
+server prefix, e.g. \`codegraph_search\` and \`codegraph_status\`. Use the name
+your client shows; examples below use the prefixed Pi form.
 
 ## Answer directly — don't delegate exploration
 
@@ -46,10 +49,11 @@ of calls; a grep/read exploration is dozens.
 - **"What would changing this break?"** → \`codegraph_impact\`
 - **"Show me this symbol's source / signature / docstring."** → \`codegraph_node\` (for long TS/JS functions, try \`detail: "structure"\` first for a static structure summary, then includeCode/read only where needed)
 - **"Trace this lifecycle / path from entry to target."** → \`codegraph_trace\` (path-shaped static graph guidance with handles, edge evidence, static ranking score/reason, and boundary/low-evidence caveats; not runtime proof)
-- **"Show me several related symbols' source / survey an area."** → \`codegraph_explore\` (ONE capped call; prefer over many codegraph_node/Read; file headers may include static relevance reasons)
+- **"Show me several related symbols' source / survey an area."** → \`codegraph_explore\` (ONE capped call; prefer over many node/Read; file headers may include static relevance reasons)
 - **"What's in directory X?"** → \`codegraph_files\`
 - **"Is the index ready / what's its size?"** → \`codegraph_status\`
 - **"Where is field/key X written, read, or mapped?"** → \`codegraph_field_sites\` (static AST-level navigation hints grouped by write/mapping/construction/read; not full dataflow or runtime proof)
+- **"Which workspace package file does import X resolve to?"** → \`codegraph_import_candidates\` (static workspace package entry candidates; not a complete Node/TypeScript resolver)
 
 ## Common chains
 
@@ -67,13 +71,14 @@ of calls; a grep/read exploration is dozens.
 - **Don't chain \`codegraph_search\` + \`codegraph_node\`** when you just want context — \`codegraph_context\` is one round-trip.
 - **Don't loop \`codegraph_node\` over many symbols** — one \`codegraph_explore\` call returns them all grouped by file, while each separate call re-reads the whole context and costs far more. Use \`codegraph_node\` for a single symbol.
 - **Don't query the index immediately after editing a file** — the watcher needs ~500ms to debounce + sync. Wait for the next turn.
+- **Don't use Codegraph as a git diff tool.** For current working-tree changes, run git status/diff first, then use codegraph handles/tools on the changed symbols for structural impact.
 
 ## Limitations
 
 - Index lags file writes by ~1 second.
 - Cross-file resolution is best-effort name matching; ambiguous calls may return multiple candidates.
-- Trace/callers/callees edge evidence reflects indexed static edges. When recorded, \`evidence=\` may show source syntax such as \`direct-call\`, \`property-call\`, \`constructor-call\`, \`import\`, \`decorator\`, or \`bare-call\`; otherwise resolver fallback may show \`name-match\`, \`framework\`, or \`fuzzy\`. \`not-recorded\` means the index did not capture that fact, not that runtime behavior is absent. Trace ranks candidate paths with a static score/reason from recorded evidence (direct-call ratio, edge confidence, scope, low-evidence, optional/test/generated penalties); this is sorting guidance, not runtime main-path proof. Trace may show boundary / low-evidence entries with exact handles for source inspection.
-- Context/explore relevance reasons are static ranking explanations from recorded search/graph signals (exact name/path matches, query-symbol extraction, entry-point proximity, generic-name or test/generated penalties). They explain why candidates were returned, not complete semantic proof.
+- \`codegraph_trace\`/\`codegraph_callers\`/\`codegraph_callees\` edge evidence reflects indexed static edges. When recorded, \`evidence=\` may show source syntax such as \`direct-call\`, \`property-call\`, \`constructor-call\`, \`import\`, \`decorator\`, or \`bare-call\`; otherwise resolver fallback may show \`name-match\`, \`framework\`, or \`fuzzy\`. \`not-recorded\` means the index did not capture that fact, not that runtime behavior is absent. Trace ranks candidate paths with a static score/reason from recorded evidence (direct-call ratio, edge confidence, scope, low-evidence, optional/test/generated penalties); this is sorting guidance, not runtime main-path proof. Trace may show boundary / low-evidence entries with exact handles for source inspection.
+- codegraph_context/codegraph_explore relevance reasons are static ranking explanations from recorded search/graph signals (exact name/path matches, query-symbol extraction, entry-point proximity, generic-name or test/generated penalties). They explain why candidates were returned, not complete semantic proof.
 - \`codegraph_node({ nodeId, detail: "structure" })\` is static AST navigation for long TS/JS function/method bodies. It highlights ranges, control-flow syntax, callsites, callback-like hints, and local object/return construction; it is not runtime proof, a complete control-flow/dataflow graph, or an LLM summary.
 - \`codegraph_field_sites\` returns static AST navigation hints (exact identifier match, not substring). It covers writes, reads, object construction, destructuring, return-object fields, and syntax-level mapping hints — not full dataflow, alias analysis, or runtime payload proof. A "no-matches" result only means the exact string wasn't found in searchable TS/JS files; dynamic/computed/alias cases are not covered.
 - No live correctness validation — that's still the TypeScript compiler / test suite / linter's job. Codegraph supplements those with structural context they don't have.

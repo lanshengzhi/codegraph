@@ -77,7 +77,11 @@ console.log(`session: ${sessionId}`);
 console.log(`\nMAIN thread tools:\n${fmt(mainCounts)}`);
 console.log(`\nSUBAGENT tools (${subAgentFiles} subagent transcript${subAgentFiles === 1 ? '' : 's'}):\n${fmt(subCounts)}`);
 
-const explore = subCounts['mcp__codegraph__codegraph_explore'] || mainCounts['mcp__codegraph__codegraph_explore'] || 0;
+const explore =
+  (subCounts['mcp__codegraph__explore'] || 0) +
+  (mainCounts['mcp__codegraph__explore'] || 0) +
+  (subCounts['mcp__codegraph__codegraph_explore'] || 0) +
+  (mainCounts['mcp__codegraph__codegraph_explore'] || 0);
 const reads = (subCounts['Read'] || 0) + (mainCounts['Read'] || 0);
 const greps = (subCounts['Grep'] || 0) + (mainCounts['Grep'] || 0) + (subCounts['Bash'] || 0) + (mainCounts['Bash'] || 0);
 console.log(`\nVERDICT: codegraph_explore used ${explore}x | Read ${reads} | Grep/Bash ${greps}`);

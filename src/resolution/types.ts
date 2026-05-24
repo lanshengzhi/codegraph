@@ -109,6 +109,16 @@ export interface ResolutionContext {
    * without modification.
    */
   listDirectories?(relativePath: string): string[];
+  /**
+   * Optional workspace package candidate provider. When present, the
+   * import resolver can resolve bare/scoped workspace package specifiers
+   * to indexed source candidates. Returns empty array when the specifier
+   * is not a workspace package or has no high-confidence candidate.
+   */
+  getWorkspaceImportCandidates?(
+    specifier: string,
+    options?: { fromFile?: string; symbol?: string; highConfidenceOnly?: boolean }
+  ): Array<{ sourcePath: string; confidence: number; indexed: boolean }>;
 }
 
 /**

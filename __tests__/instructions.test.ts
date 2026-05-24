@@ -22,6 +22,7 @@ describe('CodeGraph instructions', () => {
     expect(SERVER_INSTRUCTIONS).toContain('long TS/JS functions');
     expect(SERVER_INSTRUCTIONS).toContain('structure summary');
     expect(SERVER_INSTRUCTIONS).toContain('not runtime proof');
+    expect(SERVER_INSTRUCTIONS).toContain('git status/diff');
   });
 
   it('mentions field sites and its caveats in server instructions', () => {
@@ -47,6 +48,8 @@ describe('CodeGraph instructions', () => {
     expect(INSTRUCTIONS_TEMPLATE).toContain('long TS/JS function');
     expect(INSTRUCTIONS_TEMPLATE).toContain('structure summary');
     expect(INSTRUCTIONS_TEMPLATE).toContain('not runtime proof');
+    expect(INSTRUCTIONS_TEMPLATE).toContain('git status');
+    expect(INSTRUCTIONS_TEMPLATE).toContain('git diff');
   });
 
   it('mentions field sites and its caveats in installed agent instructions', () => {
